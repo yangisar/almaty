@@ -1,0 +1,1217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ALMATY // OPEN WORLD</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; overflow:hidden; font-family:'Courier New',monospace; }
+canvas { display:block; }
+#ui { position:fixed; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:10; }
+#hud { position:absolute; top:16px; left:16px; color:#00ff88; font-size:12px; line-height:1.9; text-shadow:0 0 8px #00ff8866; }
+#hud .city { font-size:24px; font-weight:bold; letter-spacing:10px; color:#fff; text-shadow:0 0 25px #00ff88; margin-bottom:4px; }
+#speedbox { position:absolute; bottom:24px; left:50%; transform:translateX(-50%); text-align:center; color:#fff; }
+#speednum { font-size:52px; font-weight:bold; color:#00ff88; text-shadow:0 0 20px #00ff88; line-height:1; }
+#speedlbl { font-size:11px; color:#aaa; letter-spacing:4px; }
+#minimap { position:absolute; bottom:20px; right:20px; border:1.5px solid #00ff8866; box-shadow:0 0 15px #00ff8822; }
+#wanted { position:absolute; top:16px; right:16px; font-size:22px; letter-spacing:2px; }
+#controls { position:absolute; bottom:20px; left:16px; color:#ffffff44; font-size:10px; line-height:2; }
+#notify { position:absolute; top:45%; left:50%; transform:translate(-50%,-50%); font-size:22px; font-weight:bold; letter-spacing:4px; opacity:0; transition:opacity .3s; pointer-events:none; text-align:center; }
+#status { position:absolute; top:90px; left:16px; font-size:11px; color:#00ff88aa; background:rgba(0,255,136,0.07); border:1px solid #00ff8833; padding:5px 12px; border-radius:1px; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="ui">
+  <div id="hud">
+    <div class="city">ALMATY</div>
+    <div id="location">Республика Даңғылы</div>
+  </div>
+  <div id="status">ON FOOT</div>
+  <div id="wanted"></div>
+  <canvas id="minimap" width="200" height="200"></canvas>
+  <div id="speedbox"><div id="speednum">0</div><div id="speedlbl">KM/H</div></div>
+  <div id="controls">
+    WASD — Move / Drive<br>
+    E — Enter / Exit car<br>
+    SHIFT — Sprint<br>
+    SCROLL — Zoom
+  </div>
+  <div id="notify"></div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════
+//  ALMATY REAL STREET MAP
+//  Based on actual Almaty grid (N-S / E-W streets)
+//  Scale: 1 tile = ~40m
+// ═══════════════════════════════════════════════
+
+const TILE = 64;
+const HT = TILE/2;
+
+// Real Almaty main streets (N-S avenues and E-W streets)
+// Almaty has a clear grid: avenues run N-S, streets run E-W
+// Major avenues (N-S, x positions in tiles):
+const AVENUES = [
+  { x: 4,  name: "Ул. Жарокова" },
+  { x: 12, name: "Пр. Назарбаева" },
+  { x: 20, name: "Ул. Барибаева" },
+  { x: 28, name: "Ул. Панфилова" },
+  { x: 36, name: "Пр. Достык" },
+  { x: 44, name: "Пр. Сейфуллина" },
+  { x: 52, name: "Ул. Байтурсынова" },
+  { x: 60, name: "Пр. Абылай Хана" },
+  { x: 68, name: "Ул. Пушкина" },
+  { x: 76, name: "Ул. Казыбек Би" },
+  { x: 84, name: "Ул. Фурманова" },
+  { x: 92, name: "Пр. Гагарина" },
+];
+
+// Major streets (E-W, y positions):
+const STREETS = [
+  { y: 4,  name: "Ул. Аль-Фараби" },
+  { y: 12, name: "Пр. Абая" },
+  { y: 20, name: "Ул. Тимирязева" },
+  { y: 28, name: "Ул. Гоголя" },
+  { y: 36, name: "Ул. Жибек Жолы" },
+  { y: 44, name: "Ул. Толе Би" },
+  { y: 52, name: "Ул. Богенбай Батыра" },
+  { y: 60, name: "Ул. Кабанбай Батыра" },
+  { y: 68, name: "Ул. Райымбек" },
+  { y: 76, name: "Ул. Саина" },
+];
+
+const MAP_W = 100, MAP_H = 84;
+const ROAD_W = 3; // road width in tiles
+
+// Tile types
+const T_BLOCK = 0;
+const T_ROAD  = 1;
+const T_CROSS = 2;
+const T_PARK  = 3;
+const T_SIDE  = 4; // sidewalk
+
+let map = [];
+let buildingList = [];
+let parkList = [];
+
+// Real Almaty parks/landmarks
+const REAL_PARKS = [
+  { x:28, y:28, w:6, h:6, name:"Парк Панфилова", color:"#1e4025" },
+  { x:44, y:12, w:7, h:5, name:"Парк Горького", color:"#1a3820" },
+  { x:36, y:44, w:5, h:4, name:"Центральный парк", color:"#1e4025" },
+  { x:60, y:28, w:5, h:5, name:"Парк 28 гвардейцев", color:"#1a3820" },
+  { x:12, y:52, w:6, h:5, name:"Парк Atatürk", color:"#1e4025" },
+  { x:76, y:52, w:7, h:5, name:"Парк Металлург", color:"#1a3820" },
+  { x:20, y:4,  w:4, h:4, name:"Парк у Аль-Фараби", color:"#1e4025" },
+  { x:84, y:36, w:5, h:4, name:"Сквер Гагарина", color:"#1a3820" },
+];
+
+function buildMap() {
+  // Init all as block
+  for (let y=0;y<MAP_H;y++) { map[y]=[]; for(let x=0;x<MAP_W;x++) map[y][x]=T_BLOCK; }
+
+  // Lay avenues (N-S roads)
+  for (let av of AVENUES) {
+    for (let y=0;y<MAP_H;y++) {
+      for (let dx=0;dx<ROAD_W;dx++) {
+        if (av.x+dx < MAP_W) map[y][av.x+dx] = T_ROAD;
+      }
+    }
+  }
+  // Lay streets (E-W roads)
+  for (let st of STREETS) {
+    for (let x=0;x<MAP_W;x++) {
+      for (let dy=0;dy<ROAD_W;dy++) {
+        if (st.y+dy < MAP_H) map[st.y+dy][x] = T_ROAD;
+      }
+    }
+  }
+  // Mark intersections
+  for (let av of AVENUES) {
+    for (let st of STREETS) {
+      for (let dx=0;dx<ROAD_W;dx++) for(let dy=0;dy<ROAD_W;dy++) {
+        if(av.x+dx<MAP_W && st.y+dy<MAP_H) map[st.y+dy][av.x+dx]=T_CROSS;
+      }
+    }
+  }
+
+  // Parks
+  for (let p of REAL_PARKS) {
+    for (let dy=0;dy<p.h;dy++) for(let dx=0;dx<p.w;dx++) {
+      if(p.x+dx<MAP_W && p.y+dy<MAP_H) map[p.y+dy][p.x+dx]=T_PARK;
+    }
+  }
+
+  // Generate buildings in blocks between roads
+  const avX = AVENUES.map(a=>a.x);
+  const stY = STREETS.map(s=>s.y);
+
+  const blockCols = [
+    { top:'#1e2d3d', side:'#162230', right:'#0f1825', roof:'#1a2535', win:'#ffff88', winOff:'#1a2a3a' },
+    { top:'#2d1e1e', side:'#231515', right:'#1a0f0f', roof:'#2a1a1a', win:'#ffcc66', winOff:'#2a1a1a' },
+    { top:'#1e1e2d', side:'#151523', right:'#0f0f1a', roof:'#1a1a2a', win:'#88ccff', winOff:'#1a1a2a' },
+    { top:'#2d2d1e', side:'#232315', right:'#1a1a0f', roof:'#2a2a1a', win:'#aaffaa', winOff:'#1e2218' },
+  ];
+
+  for (let bi=0;bi<stY.length-1;bi++) {
+    for (let ai=0;ai<avX.length-1;ai++) {
+      const x0 = avX[ai]+ROAD_W;
+      const y0 = stY[bi]+ROAD_W;
+      const x1 = avX[ai+1];
+      const y1 = stY[bi+1];
+      if (x1-x0 < 2 || y1-y0 < 2) continue;
+
+      // Check if park here
+      let isPark = false;
+      for (let p of REAL_PARKS) {
+        if (p.x >= x0 && p.x < x1 && p.y >= y0 && p.y < y1) { isPark=true; break; }
+      }
+      if (isPark) continue;
+
+      // Subdivide block into buildings
+      let cx = x0+1;
+      while (cx < x1-1) {
+        let cy = y0+1;
+        while (cy < y1-1) {
+          const bw = Math.min(2+Math.floor(Math.random()*3), x1-cx-1);
+          const bh = Math.min(2+Math.floor(Math.random()*3), y1-cy-1);
+          const height = 1 + Math.floor(Math.random()*5);
+          if (bw<1||bh<1) { cy++; continue; }
+          const pal = blockCols[Math.floor(Math.random()*blockCols.length)];
+          buildingList.push({x:cx,y:cy,w:bw,h:bh,height,...pal});
+          for(let dy=0;dy<bh;dy++) for(let dx=0;dx<bw;dx++) {
+            if(cy+dy<MAP_H&&cx+dx<MAP_W) map[cy+dy][cx+dx]=T_BLOCK;
+          }
+          cy += bh+1;
+        }
+        cx += 3;
+      }
+    }
+  }
+}
+
+buildMap();
+
+// ═══════════════════════════════════════════════
+//  CANVAS SETUP
+// ═══════════════════════════════════════════════
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const mm = document.getElementById('minimap');
+const mctx = mm.getContext('2d');
+
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+window.addEventListener('resize', ()=>{ canvas.width=window.innerWidth; canvas.height=window.innerHeight; });
+
+// ═══════════════════════════════════════════════
+//  ISO UTILS
+// ═══════════════════════════════════════════════
+function iso(wx,wy,wz=0) {
+  return {
+    sx: (wx-wy)*HT,
+    sy: (wx+wy)*HT*0.5 - wz*TILE*0.55
+  };
+}
+
+// Camera
+let cam = {x:0, y:0, zoom:1.1};
+
+// ═══════════════════════════════════════════════
+//  INPUT
+// ═══════════════════════════════════════════════
+const K = {};
+document.addEventListener('keydown', e=>{
+  K[e.code]=true;
+  if(e.code==='KeyE') interactCar();
+  if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','KeyW','KeyA','KeyS','KeyD','ShiftLeft'].includes(e.code)) e.preventDefault();
+});
+document.addEventListener('keyup', e=>K[e.code]=false);
+canvas.addEventListener('wheel', e=>{
+  cam.zoom *= e.deltaY>0 ? 0.9 : 1.11;
+  cam.zoom = Math.max(0.4,Math.min(2.5,cam.zoom));
+},{passive:true});
+
+// ═══════════════════════════════════════════════
+//  CARS — realistic physics
+// ═══════════════════════════════════════════════
+const CAR_TYPES = [
+  // sedan
+  { len:1.0, wid:0.48, maxSpd:9, accel:5, brake:9, grip:2.8, color:'#c03030', color2:'#902020', name:'Sedan' },
+  // SUV
+  { len:1.1, wid:0.55, maxSpd:8, accel:4, brake:8, grip:2.2, color:'#404080', color2:'#303060', name:'SUV' },
+  // sports
+  { len:0.9, wid:0.44, maxSpd:14, accel:8, brake:12, grip:3.5, color:'#30c040', color2:'#208030', name:'Sports' },
+  // taxi
+  { len:1.0, wid:0.48, maxSpd:8, accel:4.5, brake:8, grip:2.5, color:'#d4aa00', color2:'#aa8800', name:'Taxi' },
+  // truck
+  { len:1.4, wid:0.6, maxSpd:6, accel:2.5, brake:6, grip:1.8, color:'#666666', color2:'#444444', name:'Truck' },
+  // sedan2
+  { len:1.0, wid:0.48, maxSpd:9, accel:5, brake:9, grip:2.8, color:'#aa3090', color2:'#7a2070', name:'Sedan' },
+  // sedan3
+  { len:1.0, wid:0.48, maxSpd:9, accel:5, brake:9, grip:2.8, color:'#c07020', color2:'#905010', name:'Sedan' },
+];
+
+let cars = [];
+
+function spawnCars() {
+  const roadTiles = [];
+  for(let y=1;y<MAP_H-1;y++) for(let x=1;x<MAP_W-1;x++) {
+    if(map[y][x]===T_ROAD||map[y][x]===T_CROSS) roadTiles.push({x,y});
+  }
+  // Spawn on roads aligned with road direction
+  for(let i=0;i<80;i++) {
+    const pos = roadTiles[Math.floor(Math.random()*roadTiles.length)];
+    const typ = CAR_TYPES[Math.floor(Math.random()*CAR_TYPES.length)];
+    // determine direction from road
+    let angle = Math.random()<0.5 ? 0 : Math.PI/2;
+    // check which axis this road is on
+    let isNS=false, isEW=false;
+    for(let av of AVENUES) if(pos.x>=av.x&&pos.x<av.x+ROAD_W) { isNS=true; break; }
+    for(let st of STREETS) if(pos.y>=st.y&&pos.y<st.y+ROAD_W) { isEW=true; break; }
+    if(isNS&&!isEW) angle=Math.random()<0.5?Math.PI/2:-Math.PI/2;
+    else if(isEW&&!isNS) angle=Math.random()<0.5?0:Math.PI;
+    else angle=Math.random()*Math.PI*2;
+
+    cars.push({
+      x: pos.x+0.5, y: pos.y+0.5,
+      angle,
+      vx:0, vy:0,          // velocity
+      speed:0,             // forward speed
+      steer:0,             // current steering angle
+      type:typ,
+      occupied:false,
+      braking:false,
+      id:i,
+      // AI state
+      ai:{ state:'driving', timer:2+Math.random()*4, waitTimer:0,
+           targetAngle:angle, turnDir:1, stuckTimer:0, prevX:pos.x,prevY:pos.y },
+    });
+  }
+}
+spawnCars();
+
+// ═══════════════════════════════════════════════
+//  PLAYER
+// ═══════════════════════════════════════════════
+let player = {
+  x:36, y:44,
+  angle:0,
+  speed:0,
+  inCar:false,
+  car:null,
+  frame:0, frameTimer:0,
+  health:100,
+};
+
+// ═══════════════════════════════════════════════
+//  WANTED
+// ═══════════════════════════════════════════════
+let wanted = 0;
+let wantedDecay = 0;
+
+function addWanted(n) {
+  wanted = Math.min(5, wanted+n);
+  wantedDecay = 0;
+  updateWanted();
+}
+function updateWanted() {
+  const el = document.getElementById('wanted');
+  el.innerHTML = '';
+  for(let i=0;i<5;i++) {
+    const star = document.createElement('span');
+    star.textContent = '★';
+    star.style.color = i<wanted ? '#ff3333' : '#333';
+    star.style.textShadow = i<wanted ? '0 0 10px #ff3333' : 'none';
+    star.style.fontSize = '20px';
+    el.appendChild(star);
+  }
+}
+updateWanted();
+
+// ═══════════════════════════════════════════════
+//  NOTIFICATIONS
+// ═══════════════════════════════════════════════
+let notifyTimer=0;
+function notify(msg,color='#ffcc00') {
+  const el=document.getElementById('notify');
+  el.textContent=msg; el.style.color=color; el.style.textShadow=`0 0 20px ${color}`;
+  el.style.opacity='1'; notifyTimer=2.5;
+}
+
+// ═══════════════════════════════════════════════
+//  COLLISION / MAP QUERIES
+// ═══════════════════════════════════════════════
+function tileAt(x,y) {
+  const tx=Math.floor(x), ty=Math.floor(y);
+  if(tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return T_BLOCK;
+  return map[ty][tx];
+}
+function canWalk(x,y) { const t=tileAt(x,y); return t!==T_BLOCK; }
+function canDrive(x,y) { const t=tileAt(x,y); return t===T_ROAD||t===T_CROSS; }
+
+// ═══════════════════════════════════════════════
+//  CAR INTERACTION
+// ═══════════════════════════════════════════════
+function interactCar() {
+  if(player.inCar) {
+    // exit
+    player.inCar=false;
+    player.x = player.car.x + Math.cos(player.car.angle+Math.PI/2)*1.2;
+    player.y = player.car.y + Math.sin(player.car.angle+Math.PI/2)*1.2;
+    player.car.occupied=false;
+    player.car.speed*=0.1;
+    player.car=null;
+    document.getElementById('status').textContent='ON FOOT';
+    notify('VEHICLE ABANDONED','#aaaaaa');
+  } else {
+    let closest=null, dist=1.8;
+    for(let c of cars) {
+      const d=Math.hypot(c.x-player.x, c.y-player.y);
+      if(d<dist) { closest=c; dist=d; }
+    }
+    if(closest) {
+      player.inCar=true; player.car=closest;
+      closest.occupied=true;
+      closest.speed*=0.5;
+      addWanted(1);
+      document.getElementById('status').textContent='DRIVING: '+closest.type.name.toUpperCase();
+      notify('CAR JACKED!','#ff3333');
+    } else {
+      notify('NO VEHICLE NEARBY','#666666');
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════
+//  PHYSICS UPDATE
+// ═══════════════════════════════════════════════
+function updateCar(car, dt, isPlayer) {
+  const t = car.type;
+  let accel=0, steerInput=0;
+
+  if(isPlayer) {
+    if(K['KeyW']||K['ArrowUp'])   accel= t.accel;
+    if(K['KeyS']||K['ArrowDown']) accel=-t.brake*0.6;
+    if(K['KeyA']||K['ArrowLeft']) steerInput=-1;
+    if(K['KeyD']||K['ArrowRight']) steerInput=1;
+  } else {
+    updateAI(car, dt);
+    accel = car.ai.accel||0;
+    steerInput = car.ai.steer||0;
+  }
+
+  // Speed update
+  if(accel!==0) {
+    car.speed += accel*dt;
+  } else {
+    // engine braking
+    car.speed *= (1 - 2.5*dt);
+    if(Math.abs(car.speed)<0.01) car.speed=0;
+  }
+  car.speed = Math.max(-t.maxSpd*0.4, Math.min(t.maxSpd, car.speed));
+
+  // Steering — Ackermann-style: turn rate proportional to speed
+  const maxSteerAngle = 0.6;
+  const steerSpeed = 3.0;
+  car.steer += (steerInput*maxSteerAngle - car.steer)*steerSpeed*dt;
+  car.steer = Math.max(-maxSteerAngle, Math.min(maxSteerAngle, car.steer));
+
+  // Update heading based on speed and steer
+  const wheelbase = t.len;
+  const turnRate = (Math.abs(car.speed)>0.05) ? (car.speed/wheelbase)*Math.tan(car.steer)*t.grip : 0;
+  car.angle += turnRate*dt;
+
+  // Move
+  const nx = car.x + Math.cos(car.angle)*car.speed*dt;
+  const ny = car.y + Math.sin(car.angle)*car.speed*dt;
+
+  if(canDrive(nx, ny)) {
+    car.x=nx; car.y=ny;
+  } else {
+    // Try axis-separated
+    const nxOnly = car.x + Math.cos(car.angle)*car.speed*dt;
+    const nyOnly = car.y + Math.sin(car.angle)*car.speed*dt;
+    if(canDrive(nxOnly, car.y)) { car.x=nxOnly; car.speed*=0.6; }
+    else if(canDrive(car.x, nyOnly)) { car.y=nyOnly; car.speed*=0.6; }
+    else {
+      car.speed *= -0.3; // bounce
+      if(isPlayer) notify('COLLISION!','#ff6600');
+    }
+  }
+
+  // Clamp to map
+  car.x=Math.max(0.5,Math.min(MAP_W-0.5,car.x));
+  car.y=Math.max(0.5,Math.min(MAP_H-0.5,car.y));
+}
+
+// ═══════════════════════════════════════════════
+//  AI DRIVING
+// ═══════════════════════════════════════════════
+function updateAI(car, dt) {
+  const ai = car.ai;
+  ai.timer -= dt;
+
+  // Stuck detection
+  const moved = Math.hypot(car.x-ai.prevX, car.y-ai.prevY);
+  ai.prevX=car.x; ai.prevY=car.y;
+  if(moved<0.002) { ai.stuckTimer+=dt; } else { ai.stuckTimer*=0.9; }
+
+  if(ai.stuckTimer>2.0) {
+    // Unstuck: reverse and turn
+    car.speed=-1; ai.steer=1; ai.stuckTimer=0; ai.timer=1.5;
+  }
+
+  if(ai.timer<=0) {
+    // Decide: continue, turn, or stop briefly
+    const r=Math.random();
+    if(r<0.05) {
+      // Stop
+      ai.state='stopped'; ai.timer=1+Math.random()*2; ai.accel=0;
+    } else if(r<0.25 && Math.abs(car.speed)>0.1) {
+      // Turn at intersection
+      const turnDir = Math.random()<0.5 ? 1 : -1;
+      ai.targetAngle = Math.round(car.angle/(Math.PI/2))*(Math.PI/2) + turnDir*Math.PI/2;
+      ai.state='turning'; ai.timer=0.8+Math.random();
+    } else {
+      ai.state='driving'; ai.timer=2+Math.random()*4;
+    }
+  }
+
+  if(ai.state==='stopped') {
+    ai.accel=0; ai.steer=0;
+    car.speed*=(1-5*dt);
+  } else if(ai.state==='turning') {
+    const diff = angleDiff(ai.targetAngle, car.angle);
+    ai.steer = Math.sign(diff)*0.5;
+    ai.accel = 1.5; // slow turn
+  } else {
+    // driving: look ahead for road
+    const lookX = car.x + Math.cos(car.angle)*1.5;
+    const lookY = car.y + Math.sin(car.angle)*1.5;
+    if(!canDrive(lookX, lookY)) {
+      // Try to find nearest road heading
+      let bestAngle = car.angle;
+      let bestDist = 999;
+      for(let a=0;a<8;a++) {
+        const ta = (a/8)*Math.PI*2;
+        const tx = car.x+Math.cos(ta)*2;
+        const ty = car.y+Math.sin(ta)*2;
+        if(canDrive(tx,ty)) {
+          const d=angleDiff(ta,car.angle);
+          if(Math.abs(d)<bestDist){bestDist=Math.abs(d);bestAngle=ta;}
+        }
+      }
+      ai.steer = Math.sign(angleDiff(bestAngle,car.angle))*0.5;
+      ai.accel = 1.5;
+    } else {
+      ai.steer*=(1-3*dt); // straighten
+      ai.accel = car.type.accel*0.5;
+    }
+  }
+}
+
+function angleDiff(a,b) {
+  let d = a-b;
+  while(d>Math.PI) d-=Math.PI*2;
+  while(d<-Math.PI) d+=Math.PI*2;
+  return d;
+}
+
+// ═══════════════════════════════════════════════
+//  PLAYER MOVEMENT (on foot)
+// ═══════════════════════════════════════════════
+function updateWalking(dt) {
+  let dx=0, dy=0;
+  const speed = (K['ShiftLeft']||K['ShiftRight']) ? 5 : 3;
+  if(K['KeyW']||K['ArrowUp'])    { dx-=1; dy-=1; }
+  if(K['KeyS']||K['ArrowDown'])  { dx+=1; dy+=1; }
+  if(K['KeyA']||K['ArrowLeft'])  { dx-=1; dy+=1; }
+  if(K['KeyD']||K['ArrowRight']) { dx+=1; dy-=1; }
+  if(dx||dy) {
+    const len=Math.hypot(dx,dy);
+    dx/=len; dy/=len;
+    player.angle=Math.atan2(dy,dx);
+    player.speed=speed*dt;
+    player.frameTimer+=dt;
+    if(player.frameTimer>0.12){player.frame=(player.frame+1)%4;player.frameTimer=0;}
+    const nx=player.x+dx*speed*dt, ny=player.y+dy*speed*dt;
+    if(canWalk(nx,player.y)) player.x=nx;
+    if(canWalk(player.x,ny)) player.y=ny;
+  } else {
+    player.speed=0;
+  }
+  player.x=Math.max(0.5,Math.min(MAP_W-0.5,player.x));
+  player.y=Math.max(0.5,Math.min(MAP_H-0.5,player.y));
+}
+
+// ═══════════════════════════════════════════════
+//  MAIN UPDATE
+// ═══════════════════════════════════════════════
+function update(dt) {
+  // Notify decay
+  if(notifyTimer>0) {
+    notifyTimer-=dt;
+    if(notifyTimer<=0) document.getElementById('notify').style.opacity='0';
+  }
+
+  // Wanted decay
+  wantedDecay+=dt;
+  if(wantedDecay>20&&wanted>0) { wanted--; wantedDecay=0; updateWanted(); }
+
+  if(player.inCar) {
+    updateCar(player.car, dt, true);
+    player.x=player.car.x; player.y=player.car.y;
+    player.angle=player.car.angle;
+    const kmh = Math.abs(player.car.speed)*18; // rough km/h
+    document.getElementById('speednum').textContent=Math.round(kmh);
+  } else {
+    updateWalking(dt);
+    document.getElementById('speednum').textContent=Math.round(player.speed*120);
+  }
+
+  // AI cars
+  for(let c of cars) if(!c.occupied) updateCar(c,dt,false);
+
+  // Camera smooth follow
+  const focus = player.inCar ? player.car : player;
+  const tp = iso(focus.x, focus.y);
+  const tcx = tp.sx - canvas.width/(2*cam.zoom);
+  const tcy = tp.sy - canvas.height/(2*cam.zoom);
+  cam.x += (tcx-cam.x)*8*dt;
+  cam.y += (tcy-cam.y)*8*dt;
+
+  // Location display
+  updateLocation();
+}
+
+function updateLocation() {
+  const px=player.x, py=player.y;
+  let locStr='';
+  // Check nearest street
+  let nearestAv=null, dAv=99;
+  for(let av of AVENUES){const d=Math.abs(px-av.x);if(d<dAv){dAv=d;nearestAv=av;}}
+  let nearestSt=null, dSt=99;
+  for(let st of STREETS){const d=Math.abs(py-st.y);if(d<dSt){dSt=d;nearestSt=st;}}
+  // Check park
+  for(let p of REAL_PARKS){
+    if(px>=p.x&&px<p.x+p.w&&py>=p.y&&py<p.y+p.h){locStr=p.name;break;}
+  }
+  if(!locStr && nearestAv && nearestSt) locStr=nearestSt.name+' / '+nearestAv.name;
+  else if(!locStr && nearestAv) locStr=nearestAv.name;
+  document.getElementById('location').textContent=locStr||'Алматы';
+}
+
+// ═══════════════════════════════════════════════
+//  RENDERING
+// ═══════════════════════════════════════════════
+
+// Pre-calc render order for buildings
+buildingList.sort((a,b)=>(a.x+a.y)-(b.x+b.y));
+
+// Tree positions in parks
+let trees=[];
+for(let p of REAL_PARKS) {
+  for(let dy=0;dy<p.h;dy+=1.5) for(let dx=0;dx<p.w;dx+=1.5) {
+    trees.push({x:p.x+dx+0.4+Math.random()*0.3, y:p.y+dy+0.4+Math.random()*0.3,
+      r:6+Math.random()*5, c:p.color});
+  }
+}
+trees.sort((a,b)=>(a.x+a.y)-(b.x+b.y));
+
+function worldToScreen(wx,wy) {
+  const p=iso(wx,wy);
+  return {
+    sx: (p.sx-cam.x)*cam.zoom + canvas.width/2,
+    sy: (p.sy-cam.y)*cam.zoom + canvas.height/2
+  };
+}
+
+function drawDiamond(ctx, cx,cy, hw,hh, fill, stroke) {
+  ctx.beginPath();
+  ctx.moveTo(cx,cy-hh);
+  ctx.lineTo(cx+hw,cy);
+  ctx.lineTo(cx,cy+hh);
+  ctx.lineTo(cx-hw,cy);
+  ctx.closePath();
+  if(fill){ctx.fillStyle=fill;ctx.fill();}
+  if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=0.5;ctx.stroke();}
+}
+
+function tileScreen(tx,ty) {
+  const p=iso(tx+0.5,ty+0.5);
+  return {
+    sx:(p.sx-cam.x)*cam.zoom+canvas.width/2,
+    sy:(p.sy-cam.y)*cam.zoom+canvas.height/2
+  };
+}
+
+// Tile rendering
+const TILE_COLORS = {
+  [T_BLOCK]: null,
+  [T_ROAD]:  '#1a1a22',
+  [T_CROSS]: '#141418',
+  [T_PARK]:  '#1a3320',
+  [T_SIDE]:  '#22222c',
+};
+
+function render() {
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  // Sky
+  const g=ctx.createLinearGradient(0,0,0,canvas.height);
+  g.addColorStop(0,'#060610'); g.addColorStop(1,'#0e0e20');
+  ctx.fillStyle=g; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // Stars
+  ctx.fillStyle='rgba(255,255,255,0.4)';
+  for(let i=0;i<100;i++){
+    ctx.fillRect((i*173.1)%canvas.width,(i*97.7)%canvas.height*0.5,1,1);
+  }
+
+  const Z=cam.zoom;
+
+  // Determine visible tile range
+  const screenTiles = [];
+  const margin = 4;
+  // We iterate tiles in iso order (y+x = depth)
+  for(let sum=0;sum<(MAP_W+MAP_H);sum++) {
+    for(let tx=0;tx<MAP_W;tx++) {
+      const ty=sum-tx;
+      if(ty<0||ty>=MAP_H) continue;
+      const t=map[ty][tx];
+      // Cull
+      const p=tileScreen(tx,ty);
+      if(p.sx<-TILE*Z*2||p.sx>canvas.width+TILE*Z*2||p.sy<-TILE*Z||p.sy>canvas.height+TILE*Z*2) continue;
+
+      const col = TILE_COLORS[t];
+      if(col===null) continue;
+
+      // Draw tile diamond
+      const hw=HT*Z, hh=HT*Z*0.5;
+      drawDiamond(ctx,p.sx,p.sy,hw,hh,col,null);
+
+      // Road details
+      if(t===T_ROAD||t===T_CROSS) {
+        // sidewalk edge highlight
+        ctx.strokeStyle='#2a2a36'; ctx.lineWidth=0.5;
+        const corners=[
+          iso(tx,ty),iso(tx+1,ty),iso(tx+1,ty+1),iso(tx,ty+1)
+        ].map(pt=>({sx:(pt.sx-cam.x)*Z+canvas.width/2, sy:(pt.sy-cam.y)*Z+canvas.height/2}));
+        ctx.beginPath();
+        ctx.moveTo(corners[0].sx,corners[0].sy);
+        for(let c of corners) ctx.lineTo(c.sx,c.sy);
+        ctx.closePath(); ctx.stroke();
+
+        // Center line dashes on road (not cross)
+        if(t===T_ROAD) {
+          ctx.strokeStyle='rgba(255,220,50,0.15)';
+          ctx.lineWidth=1; ctx.setLineDash([4,6]);
+          ctx.beginPath();
+          ctx.moveTo(p.sx-hw*0.5,p.sy);
+          ctx.lineTo(p.sx+hw*0.5,p.sy);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
+
+      // Park grass texture
+      if(t===T_PARK) {
+        // subtle lighter dots
+        ctx.fillStyle='rgba(40,100,50,0.3)';
+        for(let k=0;k<3;k++) {
+          const ox=(((tx*7+k*13)%10)-5)*0.06;
+          const oy=(((ty*11+k*17)%10)-5)*0.03;
+          const gp=iso(tx+0.5+ox,ty+0.5+oy);
+          const gpx=(gp.sx-cam.x)*Z+canvas.width/2;
+          const gpy=(gp.sy-cam.y)*Z+canvas.height/2;
+          ctx.beginPath();ctx.arc(gpx,gpy,1,0,Math.PI*2);ctx.fill();
+        }
+      }
+    }
+  }
+
+  // ── Street name labels ──
+  ctx.save();
+  ctx.font = `${Math.max(7,9*Z)}px 'Courier New'`;
+  ctx.textAlign='center';
+  // Avenue labels (N-S)
+  for(let av of AVENUES) {
+    for(let y=8;y<MAP_H;y+=16) {
+      const p=iso(av.x+1.5, y+0.5);
+      const sx=(p.sx-cam.x)*Z+canvas.width/2;
+      const sy=(p.sy-cam.y)*Z+canvas.height/2;
+      if(sx<-100||sx>canvas.width+100||sy<-20||sy>canvas.height+20) continue;
+      ctx.save();
+      ctx.translate(sx,sy);
+      // Rotate to N-S isometric direction
+      ctx.rotate(-Math.PI/6);
+      ctx.fillStyle='rgba(255,255,255,0.25)';
+      ctx.fillText(av.name, 0, 0);
+      ctx.restore();
+    }
+  }
+  // Street labels (E-W)
+  for(let st of STREETS) {
+    for(let x=8;x<MAP_W;x+=18) {
+      const p=iso(x+0.5, st.y+1.5);
+      const sx=(p.sx-cam.x)*Z+canvas.width/2;
+      const sy=(p.sy-cam.y)*Z+canvas.height/2;
+      if(sx<-100||sx>canvas.width+100||sy<-20||sy>canvas.height+20) continue;
+      ctx.save();
+      ctx.translate(sx,sy);
+      ctx.rotate(Math.PI/6);
+      ctx.fillStyle='rgba(255,255,255,0.25)';
+      ctx.fillText(st.name, 0, 0);
+      ctx.restore();
+    }
+  }
+  ctx.restore();
+
+  // ── Trees ──
+  for(let tr of trees) {
+    const p=iso(tr.x,tr.y,0);
+    const sx=(p.sx-cam.x)*Z+canvas.width/2;
+    const sy=(p.sy-cam.y)*Z+canvas.height/2;
+    if(sx<-50||sx>canvas.width+50||sy<-50||sy>canvas.height+50) continue;
+    const r=tr.r*Z*0.8;
+    // trunk
+    ctx.fillStyle='#4a2a10';
+    ctx.fillRect(sx-1.5*Z,sy-r*0.6,3*Z,r*0.7);
+    // shadow
+    ctx.beginPath();ctx.ellipse(sx,sy+2,r*0.8,r*0.4,0,0,Math.PI*2);
+    ctx.fillStyle='rgba(0,0,0,0.25)';ctx.fill();
+    // canopy layers
+    ctx.beginPath();ctx.arc(sx,sy-r*0.5,r,0,Math.PI*2);
+    ctx.fillStyle='#1a4520';ctx.fill();
+    ctx.beginPath();ctx.arc(sx-r*0.2,sy-r*0.8,r*0.75,0,Math.PI*2);
+    ctx.fillStyle='#205530';ctx.fill();
+    ctx.beginPath();ctx.arc(sx+r*0.1,sy-r*1.1,r*0.55,0,Math.PI*2);
+    ctx.fillStyle='#2a6a3a';ctx.fill();
+  }
+
+  // ── Buildings ──
+  for(let b of buildingList) {
+    const p0=iso(b.x,b.y);
+    const sx0=(p0.sx-cam.x)*Z+canvas.width/2;
+    const sy0=(p0.sy-cam.y)*Z+canvas.height/2;
+    // Cull
+    if(sx0<-200||sx0>canvas.width+300||sy0<-b.height*TILE*Z||sy0>canvas.height+200) continue;
+    drawBuilding(b, Z);
+  }
+
+  // ── Cars (sorted by depth) ──
+  const sortedCars = [...cars].sort((a,b)=>(a.x+a.y)-(b.x+b.y));
+  for(let c of sortedCars) {
+    if(c===player.car) continue; // draw player car last
+    const p=iso(c.x,c.y);
+    const sx=(p.sx-cam.x)*Z+canvas.width/2;
+    const sy=(p.sy-cam.y)*Z+canvas.height/2;
+    if(sx<-100||sx>canvas.width+100||sy<-100||sy>canvas.height+100) continue;
+    drawCar(ctx, c, sx, sy, Z);
+  }
+  if(player.inCar) {
+    const p=iso(player.car.x,player.car.y);
+    const sx=(p.sx-cam.x)*Z+canvas.width/2;
+    const sy=(p.sy-cam.y)*Z+canvas.height/2;
+    drawCar(ctx,player.car,sx,sy,Z);
+  }
+
+  // ── Player ──
+  if(!player.inCar) drawCharacter(ctx, player, Z);
+
+  // ── Nearby car indicator ──
+  if(!player.inCar) {
+    let closest=null,dist=1.8;
+    for(let c of cars){const d=Math.hypot(c.x-player.x,c.y-player.y);if(d<dist){closest=c;dist=d;}}
+    if(closest) {
+      const p=iso(closest.x,closest.y);
+      const sx=(p.sx-cam.x)*Z+canvas.width/2;
+      const sy=(p.sy-cam.y)*Z+canvas.height/2;
+      ctx.strokeStyle='#00ff88'; ctx.lineWidth=2;
+      ctx.setLineDash([5,5]);
+      ctx.beginPath(); ctx.arc(sx,sy-10*Z,32*Z,0,Math.PI*2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle='#00ff88'; ctx.font=`${11*Z}px 'Courier New'`;
+      ctx.textAlign='center';
+      ctx.fillText('[E] JACK',sx,sy-46*Z);
+    }
+  }
+
+  drawMinimap();
+}
+
+// ── BUILDING RENDERER (detailed) ──
+function drawBuilding(b, Z) {
+  const H = b.height;
+  const TH = TILE*0.55; // tile height in pixels per unit z
+
+  function bIso(bx,by,bz=0) {
+    const p=iso(bx,by,bz);
+    return { sx:(p.sx-cam.x)*Z+canvas.width/2, sy:(p.sy-cam.y)*Z+canvas.height/2 };
+  }
+
+  // Right face (visible south face)
+  ctx.beginPath();
+  const rfl=bIso(b.x,b.y+b.h,H), rfr=bIso(b.x+b.w,b.y+b.h,H);
+  const rbl=bIso(b.x,b.y+b.h,0), rbr=bIso(b.x+b.w,b.y+b.h,0);
+  ctx.moveTo(rfl.sx,rfl.sy); ctx.lineTo(rfr.sx,rfr.sy);
+  ctx.lineTo(rbr.sx,rbr.sy); ctx.lineTo(rbl.sx,rbl.sy);
+  ctx.closePath(); ctx.fillStyle=b.side; ctx.fill();
+  ctx.strokeStyle='#050508'; ctx.lineWidth=0.5; ctx.stroke();
+
+  // Left face (visible east face)
+  ctx.beginPath();
+  const lfl=bIso(b.x+b.w,b.y,H), lfr=bIso(b.x+b.w,b.y+b.h,H);
+  const lbl=bIso(b.x+b.w,b.y,0), lbr=bIso(b.x+b.w,b.y+b.h,0);
+  ctx.moveTo(lfl.sx,lfl.sy); ctx.lineTo(lfr.sx,lfr.sy);
+  ctx.lineTo(lbr.sx,lbr.sy); ctx.lineTo(lbl.sx,lbl.sy);
+  ctx.closePath(); ctx.fillStyle=b.right; ctx.fill();
+  ctx.strokeStyle='#050508'; ctx.lineWidth=0.5; ctx.stroke();
+
+  // Top face
+  ctx.beginPath();
+  const tfl=bIso(b.x,b.y,H), tfr=bIso(b.x+b.w,b.y,H);
+  const tbr=bIso(b.x+b.w,b.y+b.h,H), tbl=bIso(b.x,b.y+b.h,H);
+  ctx.moveTo(tfl.sx,tfl.sy); ctx.lineTo(tfr.sx,tfr.sy);
+  ctx.lineTo(tbr.sx,tbr.sy); ctx.lineTo(tbl.sx,tbl.sy);
+  ctx.closePath(); ctx.fillStyle=b.top; ctx.fill();
+  ctx.strokeStyle='#050508'; ctx.lineWidth=0.5; ctx.stroke();
+
+  // Windows on south face
+  const winRows = Math.min(H*2, 8);
+  const winCols = Math.min(b.w*2, 6);
+  for(let wr=0;wr<winRows;wr++) {
+    for(let wc=0;wc<winCols;wc++) {
+      const wz = (wr+0.4)/winRows*H;
+      const wx = b.x+(wc+0.25)/winCols*b.w;
+      const wy = b.y+b.h-0.05;
+      const wp=bIso(wx,wy,wz);
+      const lit=(Math.sin(b.x*3.1+b.y*7.3+wr*5.7+wc*2.9)>-0.3);
+      ctx.beginPath();ctx.rect(wp.sx-2*Z,wp.sy-3*Z,4*Z,4*Z);
+      ctx.fillStyle=lit?b.win:b.winOff;
+      if(lit){ctx.shadowBlur=4*Z;ctx.shadowColor=b.win;}
+      ctx.fill();ctx.shadowBlur=0;
+    }
+  }
+  // Windows on east face
+  for(let wr=0;wr<winRows;wr++) {
+    for(let wc=0;wc<winCols;wc++) {
+      const wz=(wr+0.4)/winRows*H;
+      const wx=b.x+b.w-0.05;
+      const wy=b.y+(wc+0.25)/winCols*b.h;
+      const wp=bIso(wx,wy,wz);
+      const lit=(Math.sin(b.x*2.3+b.y*5.1+wr*4.3+wc*3.7)>-0.25);
+      ctx.beginPath();ctx.rect(wp.sx-2*Z,wp.sy-3*Z,4*Z,4*Z);
+      ctx.fillStyle=lit?b.win:b.winOff;
+      if(lit){ctx.shadowBlur=4*Z;ctx.shadowColor=b.win;}
+      ctx.fill();ctx.shadowBlur=0;
+    }
+  }
+}
+
+// ── DETAILED CAR SPRITE ──
+function drawCar(ctx, car, sx, sy, Z) {
+  const t=car.type;
+  const L=t.len, W=t.wid;
+  ctx.save();
+  ctx.translate(sx,sy);
+
+  // Helper: world offset → screen offset (isometric)
+  function carPt(lx,ly,lz=0) {
+    const cos=Math.cos(car.angle), sin=Math.sin(car.angle);
+    const wx=lx*cos-ly*sin, wy=lx*sin+ly*cos;
+    const p=iso(car.x+wx,car.y+wy,lz);
+    return {
+      sx:(p.sx-cam.x)*Z+canvas.width/2-sx,
+      sy:(p.sy-cam.y)*Z+canvas.height/2-sy
+    };
+  }
+
+  function poly(pts, fill, stroke, lw=0.5) {
+    ctx.beginPath();
+    ctx.moveTo(pts[0].sx,pts[0].sy);
+    for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i].sx,pts[i].sy);
+    ctx.closePath();
+    if(fill){ctx.fillStyle=fill;ctx.fill();}
+    if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=lw*Z;ctx.stroke();}
+  }
+
+  // Shadow
+  ctx.save();
+  ctx.globalAlpha=0.35;
+  poly([carPt(-W,-L,0),carPt(W,-L,0),carPt(W,L,0),carPt(-W,L,0)],'#000',null);
+  ctx.globalAlpha=1;
+  ctx.restore();
+
+  const bodyZ=0.12, roofZ=0.32;
+
+  // Underbody / bottom rim
+  poly([carPt(-W,-L,0.01),carPt(W,-L,0.01),carPt(W,L,0.01),carPt(-W,L,0.01)],
+    '#111',null);
+
+  // Wheels (4)
+  const wheelZ=0.06;
+  const wheelPositions=[
+    {lx:-W*0.95, ly:-L*0.6},
+    {lx:W*0.95,  ly:-L*0.6},
+    {lx:-W*0.95, ly:L*0.55},
+    {lx:W*0.95,  ly:L*0.55},
+  ];
+  for(let w of wheelPositions) {
+    const wc=carPt(w.lx,w.ly,wheelZ);
+    ctx.beginPath(); ctx.arc(wc.sx,wc.sy,4*Z*Math.min(L,1),0,Math.PI*2);
+    ctx.fillStyle='#1a1a1a'; ctx.fill();
+    ctx.strokeStyle='#555'; ctx.lineWidth=1.5*Z; ctx.stroke();
+    // hub
+    ctx.beginPath(); ctx.arc(wc.sx,wc.sy,2*Z,0,Math.PI*2);
+    ctx.fillStyle='#888'; ctx.fill();
+  }
+
+  // Body sides
+  // Left side panel
+  poly([
+    carPt(-W,-L,0.02),carPt(-W,-L,bodyZ),carPt(-W,L,bodyZ),carPt(-W,L,0.02)
+  ], shadeColor(t.color2,-30), null);
+  // Right side panel
+  poly([
+    carPt(W,-L,0.02),carPt(W,-L,bodyZ),carPt(W,L,bodyZ),carPt(W,L,0.02)
+  ], t.color2, null);
+  // Front panel
+  poly([
+    carPt(-W,-L,0.02),carPt(W,-L,0.02),carPt(W,-L,bodyZ),carPt(-W,-L,bodyZ)
+  ], shadeColor(t.color,-20), null);
+  // Rear panel
+  poly([
+    carPt(-W,L,0.02),carPt(W,L,0.02),carPt(W,L,bodyZ),carPt(-W,L,bodyZ)
+  ], shadeColor(t.color,-40), null);
+  // Top body
+  poly([
+    carPt(-W,-L,bodyZ),carPt(W,-L,bodyZ),carPt(W,L,bodyZ),carPt(-W,L,bodyZ)
+  ], t.color, '#111',0.5);
+
+  // Cabin / roof (narrower, set back)
+  const cxs=0.75, cxe=0.7; // cabin x scale
+  const cfe=-L*0.3, cre=L*0.4; // cabin front/rear edge along car
+  const roofFront=-L*0.0, roofRear=L*0.3;
+
+  // Cabin sides
+  poly([
+    carPt(-W*cxs,cfe,bodyZ),carPt(-W*cxe,cfe,roofZ),
+    carPt(-W*cxe,cre,roofZ),carPt(-W*cxs,cre,bodyZ)
+  ], shadeColor(t.color,-50), null);
+  poly([
+    carPt(W*cxs,cfe,bodyZ),carPt(W*cxe,cfe,roofZ),
+    carPt(W*cxe,cre,roofZ),carPt(W*cxs,cre,bodyZ)
+  ], shadeColor(t.color,-35), null);
+  // Windshield
+  poly([
+    carPt(-W*cxs,cfe,bodyZ),carPt(W*cxs,cfe,bodyZ),
+    carPt(W*cxe,cfe,roofZ),carPt(-W*cxe,cfe,roofZ)
+  ], 'rgba(100,180,255,0.45)', '#88ccff44',0.5);
+  // Rear window
+  poly([
+    carPt(-W*cxs,cre,bodyZ),carPt(W*cxs,cre,bodyZ),
+    carPt(W*cxe,cre,roofZ),carPt(-W*cxe,cre,roofZ)
+  ], 'rgba(80,150,220,0.35)', null);
+  // Roof
+  poly([
+    carPt(-W*cxe,cfe,roofZ),carPt(W*cxe,cfe,roofZ),
+    carPt(W*cxe,cre,roofZ),carPt(-W*cxe,cre,roofZ)
+  ], shadeColor(t.color,10), '#00000066',0.5);
+
+  // Headlights (front = negative L direction)
+  const headlights=[{lx:-W*0.6,ly:-L},{lx:W*0.6,ly:-L}];
+  const moving = Math.abs(car.speed)>0.2;
+  for(let h of headlights) {
+    const hp=carPt(h.lx,h.ly,bodyZ*0.6);
+    ctx.beginPath();ctx.arc(hp.sx,hp.sy,3.5*Z,0,Math.PI*2);
+    if(moving||car.occupied){
+      ctx.shadowBlur=14*Z;ctx.shadowColor='#ffffaa';
+      ctx.fillStyle='#ffffcc';
+    } else {
+      ctx.shadowBlur=0;ctx.fillStyle='#aaa888';
+    }
+    ctx.fill();ctx.shadowBlur=0;
+    ctx.strokeStyle='#fff6';ctx.lineWidth=0.5*Z;ctx.stroke();
+  }
+  // Brake lights / rear
+  const taillights=[{lx:-W*0.7,ly:L},{lx:W*0.7,ly:L}];
+  for(let h of taillights) {
+    const hp=carPt(h.lx,h.ly,bodyZ*0.6);
+    ctx.beginPath();ctx.arc(hp.sx,hp.sy,3*Z,0,Math.PI*2);
+    const braking=(car.occupied&&K['KeyS'])||car.speed<-0.1;
+    if(braking){ctx.shadowBlur=10*Z;ctx.shadowColor='#ff2200';ctx.fillStyle='#ff4400';}
+    else{ctx.shadowBlur=0;ctx.fillStyle='#550000';}
+    ctx.fill();ctx.shadowBlur=0;
+  }
+
+  // Taxi sign
+  if(t.name==='Taxi') {
+    const tp=carPt(0,-0.05,roofZ+0.06);
+    ctx.fillStyle='#ffcc00';
+    ctx.font=`bold ${6*Z}px Courier New`;
+    ctx.textAlign='center';
+    ctx.fillText('TAXI',tp.sx,tp.sy);
+  }
+
+  ctx.restore();
+}
+
+function shadeColor(hex, pct) {
+  let r=parseInt(hex.slice(1,3),16);
+  let g=parseInt(hex.slice(3,5),16);
+  let b=parseInt(hex.slice(5,7),16);
+  r=Math.max(0,Math.min(255,r+pct));
+  g=Math.max(0,Math.min(255,g+pct));
+  b=Math.max(0,Math.min(255,b+pct));
+  return `rgb(${r},${g},${b})`;
+}
+
+// ── DETAILED CHARACTER SPRITE ──
+function drawCharacter(ctx, pl, Z) {
+  const p=iso(pl.x,pl.y,0);
+  const sx=(p.sx-cam.x)*Z+canvas.width/2;
+  const sy=(p.sy-cam.y)*Z+canvas.height/2;
+
+  ctx.save();
+  ctx.translate(sx,sy);
+
+  const S=Z*0.9;
+  const frame=pl.frame;
+  const moving=pl.speed>0;
+  const legSwing=moving?Math.sin(frame/4*Math.PI*2)*5:0;
+
+  // Shadow
+  ctx.beginPath();ctx.ellipse(0,6*S,10*S,4*S,0,0,Math.PI*2);
+  ctx.fillStyle='rgba(0,0,0,0.35)';ctx.fill();
+
+  // Legs
+  // Left leg
+  ctx.save();
+  ctx.translate(-4*S,-2*S);
+  ctx.fillStyle='#2244aa';
+  ctx.beginPath();
+  ctx.roundRect(-3*S,legSwing*S,6*S,14*S,2*S);
+  ctx.fill();
+  // Shoe
+  ctx.fillStyle='#111';
+  ctx.beginPath();ctx.ellipse(-1*S,(14+legSwing)*S,5*S,3*S,0,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+
+  // Right leg
+  ctx.save();
+  ctx.translate(4*S,-2*S);
+  ctx.fillStyle='#2244aa';
+  ctx.beginPath();
+  ctx.roundRect(-3*S,-legSwing*S,6*S,14*S,2*S);
+  ctx.fill();
+  ctx.fillStyle='#111';
+  ctx.beginPath();ctx.ellipse(1*S,(14-legSwing)*S,5*S,3*S,0,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+
+  // Body / jacket
+  ctx.fillStyle='#cc2222';
+  ctx.beginPath();ctx.roundRect(-8*S,-22*S,16*S,18*S,3*S);ctx.fill();
+  // Jacket details
+  ctx.fillStyle='#aa1111';
+  ctx.fillRect(-1*S,-22*S,2*S,18*S); // center line
+  // Collar
+  ctx.fillStyle='#dddddd';
+  ctx.beginPath();ctx.moveTo(-3*S,-22*S);ctx.lineTo(0,-18*S);ctx.lineTo(3*S,-22*S);ctx.closePath();ctx.fill();
+
+  // Arms
+  const armSwing=moving?legSwing*0.7:0;
+  // Left arm
+  ctx.fillStyle='#cc2222';
+  ctx.save();ctx.translate(-10*S,-18*S);
+  ctx.fillRect(-3*S,armSwing*S,5*S,12*S);
+  // Hand
+  ctx.fillStyle='#f5c08a';
+  ctx.beginPath();ctx.arc(-1*S,(12+armSwing)*S,3*S,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+  // Right arm
+  ctx.save();ctx.translate(10*S,-18*S);
+  ctx.fillStyle='#cc2222';
+  ctx.fillRect(-2*S,-armSwing*S,5*S,12*S);
+  ctx.fillStyle='#f5c08a';
+  ctx.beginPath();ctx.arc(1*S,(12-armSwing)*S,3*S,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+
+  // Neck
+  ctx.fillStyle='#f0b080';
+  ctx.fillRect(-3*S,-26*S,6*S,5*S);
+
+  // Head
+  ctx.fillStyle='#f5c08a';
+  ctx.beginPath();ctx.arc(0,-32*S,8*S,0,Math.PI*2);ctx.fill();
+  // Hair
+  ctx.fillStyle='#332211';
+  ctx.beginPath();ctx.arc(0,-35*S,7*S,Math.PI,0);ctx.fill();
+  // Face details
+  ctx.fillStyle='#222';
+  ctx.beginPath();ctx.arc(-3*S,-32*S,1.5*S,0,Math.PI*2);ctx.fill(); // left eye
+  ctx.beginPath();ctx.arc(3*S,-32*S,1.5*S,0,Math.PI*2);ctx.fill(); // right eye
+
+  // Direction arrow (small, above head)
+  const da=pl.angle;
+  ctx.strokeStyle='#00ff8888';ctx.lineWidth=1.5*S;
+  ctx.beginPath();
+  const arrowLen=14*S;
+  ctx.moveTo(Math.cos(da-Math.PI/2)*8*S,Math.sin(da-Math.PI/2)*8*S-38*S);
+  ctx.lineTo(Math.cos(da-Math.PI/2)*arrowLen*S,Math.sin(da-Math.PI/2)*arrowLen*S-38*S);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+// ── MINIMAP ──
+function drawMinimap() {
+  const MW=200,MH=200;
+  mctx.fillStyle='#09090f';
+  mctx.fillRect(0,0,MW,MH);
+  const sx=MW/MAP_W, sy=MH/MAP_H;
+  for(let y=0;y<MAP_H;y++) for(let x=0;x<MAP_W;x++) {
+    const t=map[y][x];
+    let c;
+    if(t===T_ROAD||t===T_CROSS) c='#2a2a40';
+    else if(t===T_PARK) c='#1a4025';
+    else c='#12121e';
+    mctx.fillStyle=c;
+    mctx.fillRect(x*sx,y*sy,sx+0.5,sy+0.5);
+  }
+  // Cars
+  for(let c of cars) {
+    mctx.fillStyle=c.occupied?'#00ff88':'#ff5555';
+    mctx.fillRect(c.x*sx-1,c.y*sy-1,2.5,2.5);
+  }
+  // Player
+  mctx.fillStyle='#00ff88';
+  mctx.beginPath();mctx.arc(player.x*sx,player.y*sy,3,0,Math.PI*2);mctx.fill();
+  // Heading
+  mctx.strokeStyle='#00ff88';mctx.lineWidth=1;
+  mctx.beginPath();
+  mctx.moveTo(player.x*sx,player.y*sy);
+  mctx.lineTo((player.x+Math.cos(player.angle)*3)*sx,(player.y+Math.sin(player.angle)*3)*sy);
+  mctx.stroke();
+  // Border
+  mctx.strokeStyle='#00ff8855';mctx.lineWidth=1;
+  mctx.strokeRect(0,0,MW,MH);
+}
+
+// ═══════════════════════════════════════════════
+//  GAME LOOP
+// ═══════════════════════════════════════════════
+let lastT=0;
+function loop(t) {
+  const dt=Math.min((t-lastT)/1000,0.05);
+  lastT=t;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
