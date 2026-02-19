@@ -318,16 +318,19 @@ function tileAt(x,y){
 function canWalk(x,y){ const t=tileAt(x,y); return t===T_ROAD||t===T_CROSS||t===T_PARK; }
 function canDrive(x,y){ const t=tileAt(x,y); return t===T_ROAD||t===T_CROSS; }
 
-// Swept collision for car: check a small radius around position
+// Swept collision for car: check center + front/rear along heading only
+// This prevents getting stuck while still blocking buildings
 function canDriveRect(cx,cy,angle,halfL,halfW){
-  // check 5 sample points inside car footprint
   const cos=Math.cos(angle), sin=Math.sin(angle);
+  // Primary: check center and front/rear along direction of travel
   const pts=[
-    [cx,cy],
-    [cx+cos*halfL-sin*halfW, cy+sin*halfL+cos*halfW],
-    [cx+cos*halfL+sin*halfW, cy+sin*halfL-cos*halfW],
-    [cx-cos*halfL-sin*halfW, cy-sin*halfL+cos*halfW],
-    [cx-cos*halfL+sin*halfW, cy-sin*halfL-cos*halfW],
+    [cx, cy],
+    [cx+cos*halfL*0.8,  cy+sin*halfL*0.8],
+    [cx-cos*halfL*0.8,  cy-sin*halfL*0.8],
+    [cx+cos*halfL*0.8 - sin*halfW*0.6, cy+sin*halfL*0.8 + cos*halfW*0.6],
+    [cx+cos*halfL*0.8 + sin*halfW*0.6, cy+sin*halfL*0.8 - cos*halfW*0.6],
+    [cx-cos*halfL*0.8 - sin*halfW*0.6, cy-sin*halfL*0.8 + cos*halfW*0.6],
+    [cx-cos*halfL*0.8 + sin*halfW*0.6, cy-sin*halfL*0.8 - cos*halfW*0.6],
   ];
   for(let [px,py] of pts) if(!canDrive(px,py)) return false;
   return true;
@@ -458,11 +461,11 @@ function spawnCars(){
     else if(onEW)   angle=Math.random()<.5?0:Math.PI;
 
     cars.push({
-      x:pos.x+1.5, y:pos.y+1.5,
-      angle, speed:0, steer:0,
+      x:pos.x+0.5, y:pos.y+0.5,
+      angle, speed:0.0, steer:0,
       type:typ, occupied:false,
-      ai:{state:'drive',timer:1+Math.random()*3,
-          accel:0,steer:0,stuck:0,px:pos.x,py:pos.y}
+      ai:{state:'drive',timer:Math.random()*2,
+          accel:0.3,steer:0,stuck:0,px:pos.x+0.5,py:pos.y+0.5}
     });
   }
 }
@@ -538,18 +541,20 @@ function interactCar(){
 //  INPUT HELPERS
 // ═══════════════════════════════════════════════════════════
 function isSprinting(){ return K['ShiftLeft']||K['ShiftRight']||btnSprint; }
-function moveX(){ 
+
+// Drive inputs: W/S = throttle/brake, A/D = steer — simple 1D axes
+function driveThrottle(){
   let v=0;
-  if(K['KeyA']||K['ArrowLeft']) v-=1;
-  if(K['KeyD']||K['ArrowRight']) v+=1;
-  if(joyActive) v+=joyVec.x;
+  if(K['KeyW']||K['ArrowUp'])   v+=1;
+  if(K['KeyS']||K['ArrowDown']) v-=1;
+  if(joyActive) v+=-joyVec.y;   // joystick up = forward
   return Math.max(-1,Math.min(1,v));
 }
-function moveY(){
+function driveSteer(){
   let v=0;
-  if(K['KeyW']||K['ArrowUp']) v-=1;
-  if(K['KeyS']||K['ArrowDown']) v+=1;
-  if(joyActive) v+=joyVec.y;
+  if(K['KeyA']||K['ArrowLeft'])  v-=1;
+  if(K['KeyD']||K['ArrowRight']) v+=1;
+  if(joyActive) v+=joyVec.x;    // joystick right = steer right
   return Math.max(-1,Math.min(1,v));
 }
 
@@ -561,9 +566,8 @@ function driveCar(car, dt, isPlayer){
   let accelInput=0, steerInput=0;
 
   if(isPlayer){
-    const my=moveY(), mx=moveX();
-    accelInput=-my;        // W=forward, S=backward
-    steerInput=mx;         // A/D or joystick x
+    accelInput=driveThrottle();   // W=+1 forward, S=-1 brake/reverse
+    steerInput=driveSteer();      // A=-1 left, D=+1 right
   } else {
     aiUpdate(car, dt);
     accelInput=car.ai.accel;
@@ -843,33 +847,7 @@ function render(){
     }
   }
 
-  // STREET LABELS
-  ctx.save();
-  const fsize=Math.max(6,8*Z);
-  ctx.font=`${fsize}px Courier New`; ctx.textAlign='center';
-  for(let av of AVENUES){
-    for(let ys=8;ys<MAP_H;ys+=14){
-      const p=iso(av.x+1.5,ys);
-      const sx=(p.sx-cam.x)*Z+canvas.width/2;
-      const sy=(p.sy-cam.y)*Z+canvas.height/2;
-      if(sx<-80||sx>canvas.width+80||sy<0||sy>canvas.height) continue;
-      ctx.save(); ctx.translate(sx,sy); ctx.rotate(-0.46);
-      ctx.fillStyle='rgba(255,255,255,0.18)'; ctx.fillText(av.name,0,0);
-      ctx.restore();
-    }
-  }
-  for(let st of STREETS){
-    for(let xs=6;xs<MAP_W;xs+=16){
-      const p=iso(xs,st.y+1.5);
-      const sx=(p.sx-cam.x)*Z+canvas.width/2;
-      const sy=(p.sy-cam.y)*Z+canvas.height/2;
-      if(sx<-80||sx>canvas.width+80||sy<0||sy>canvas.height) continue;
-      ctx.save(); ctx.translate(sx,sy); ctx.rotate(0.46);
-      ctx.fillStyle='rgba(255,255,255,0.18)'; ctx.fillText(st.name,0,0);
-      ctx.restore();
-    }
-  }
-  ctx.restore();
+  // Street labels removed
 
   // TREES
   for(let tr of trees){
