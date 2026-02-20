@@ -187,7 +187,6 @@ function driveable(x,y){const t=tAt(x,y);return t===T_ROAD||t===T_CROSS;}
 // Car AABB collision — checks a box rotated by angle
 function carCanMove(cx,cy,ang,hL,hW){
   const co=Math.cos(ang),si=Math.sin(ang);
-  // sample 8 points around the car perimeter
   const offsets=[[hL,.3],[hL,-.3],[-hL,.3],[-hL,-.3],[.1,hW],[.1,-hW],[-.1,hW],[-.1,-hW]];
   for(const[fl,fs] of offsets){
     const wx=cx+co*fl-si*fs,wy=cy+si*fl+co*fs;
@@ -219,13 +218,11 @@ joyBase.addEventListener('touchstart',e=>{e.preventDefault();if(jActive)return;c
 joyBase.addEventListener('touchmove',e=>{e.preventDefault();for(const t of e.changedTouches)if(t.identifier===jId)jMove(t.clientX,t.clientY);},{passive:false});
 joyBase.addEventListener('touchend',e=>{for(const t of e.changedTouches)if(t.identifier===jId)jReset();},{passive:false});
 joyBase.addEventListener('touchcancel',jReset,{passive:false});
-// left-half canvas joystick
 cv.addEventListener('touchstart',e=>{for(const t of e.changedTouches)if(t.clientX<cv.width*.43&&!jActive){jActive=true;jId=t.identifier;jOrig={x:t.clientX,y:t.clientY};jMove(t.clientX,t.clientY);}},{passive:true});
 cv.addEventListener('touchmove',e=>{for(const t of e.changedTouches)if(t.identifier===jId)jMove(t.clientX,t.clientY);},{passive:true});
 cv.addEventListener('touchend',e=>{for(const t of e.changedTouches)if(t.identifier===jId)jReset();},{passive:true});
 jReset();
 
-// Button factory
 function mkBtn(id,onPress,onRelease){
   const el=document.getElementById(id);if(!el)return;
   function press(){el.classList.add('on');onPress&&onPress();}
@@ -247,7 +244,7 @@ mkBtn('b-grab',()=>doPickup());
 
 // ══════════════════════════ CAR TYPES ══════════════════════════
 const CAR_TYPES=[
-  {len:.85,wid:.4,maxSpd:9, acc:5,  brk:10, grip:3,   col:'#cc3030',col2:'#882020',name:'Sedan'},
+  {len:.85,wid:.4,maxSpd:9, acc:5,   brk:10, grip:3,   col:'#cc3030',col2:'#882020',name:'Sedan'},
   {len:.95,wid:.47,maxSpd:7, acc:3.5,brk:7,  grip:2.2, col:'#3055bb',col2:'#203580',name:'SUV'},
   {len:.8, wid:.38,maxSpd:13,acc:8,  brk:13, grip:3.8, col:'#22bb44',col2:'#168830',name:'Спорт'},
   {len:.85,wid:.4, maxSpd:7, acc:4,  brk:7,  grip:2.5, col:'#d4a800',col2:'#aa8800',name:'Такси'},
@@ -265,7 +262,7 @@ function spawnCars(){
     let angle=0;
     if(onNS&&!onEW)angle=(Math.random()<.5?1:-1)*Math.PI/2;
     else if(onEW)  angle=Math.random()<.5?0:Math.PI;
-    cars.push({x:pos.x+.5,y:pos.y+.5,angle,spd:0,steer:0,type:typ,driven:false,
+    cars.push({x:pos.x+.5,y:pos.y+.5,angle,spd:0,vx:0,vy:0,steer:0,type:typ,driven:false,
       ai:{st:'drive',tm:Math.random()*2,acc:.3,str:0,stuck:0,px:pos.x,py:pos.y,turnTarget:0}});
   }
 }
@@ -318,7 +315,7 @@ let player={
   weapon:null,
   kickCd:0,shootCd:0,shootAnim:0,
   hitFlash:0,
-  kickAnim:0, // >0 = kick animation playing
+  kickAnim:0, 
 };
 
 // ══════════════════════════ WANTED ══════════════════════════
@@ -367,7 +364,7 @@ function doShoot(){
   if(player.shootCd>0)return;
 
   player.shootCd=w.id==='shotgun'?.65:w.id==='molotov'?1.1:.22;
-  player.shootAnim=.18; // muzzle flash anim
+  player.shootAnim=.18; 
 
   if(w.ammo>0){
     w.ammo--;
@@ -376,8 +373,7 @@ function doShoot(){
     }
   }
 
-  // Auto-aim: aim at nearest visible monster, else use facing direction
-  let aimAngle=player.angle-Math.PI/2; // default: facing direction
+  let aimAngle=player.angle-Math.PI/2;
   let nearest=null, nearDist=99;
   for(const m of monsters){
     const d=Math.hypot(m.x-player.x,m.y-player.y);
@@ -401,7 +397,6 @@ function doShoot(){
     });
   }
   effects.push({type:'flash',x:player.x,y:player.y,t:.14,col:w.projColor});
-  // Recoil — push player slightly back
   player.x-=Math.cos(aimAngle)*.05;
   player.y-=Math.sin(aimAngle)*.05;
   updateHUD();
@@ -418,7 +413,9 @@ function toggleCar(){
   if(player.inCar){
     const c=player.car;
     const ex=c.x+Math.cos(c.angle+Math.PI/2)*1.2,ey=c.y+Math.sin(c.angle+Math.PI/2)*1.2;
-    player.inCar=false;player.car=null;c.driven=false;c.spd*=.05;
+    player.inCar=false;player.car=null;c.driven=false;
+    // Decelerate naturally instead of freezing
+    c.vx*=.1; c.vy*=.1; c.spd*=.1;
     player.x=walkable(ex,ey)?ex:c.x;player.y=walkable(ex,ey)?ey:c.y;
     document.getElementById('drive-panel').style.display='none';
     document.getElementById('walk-panel').style.display='flex';
@@ -439,7 +436,7 @@ function toggleCar(){
 }
 
 // ══════════════════════════ CAR PHYSICS ══════════════════════════
-// Simple arcade car: velocity along heading, steer rotates heading
+// Upgraded 2D Vector / Bicycle model physics
 function updateCar(car,dt,isPlayer){
   const T=car.type;
   let throttle=0,steerIn=0;
@@ -458,34 +455,66 @@ function updateCar(car,dt,isPlayer){
     steerIn=Math.max(-1,Math.min(1,car.ai.str*2));
   }
 
-  // Speed
-  const maxR=T.maxSpd, maxF=-T.maxSpd*.4;
-  if(throttle>0)      car.spd=Math.min(maxR, car.spd+T.acc*dt);
-  else if(throttle<0) car.spd=Math.max(maxF, car.spd-T.brk*dt);
-  else                car.spd*=(1-Math.min(1,3*dt));
-  if(Math.abs(car.spd)<.02) car.spd=0;
-
-  // Steering: only works when moving, more responsive
-  if(Math.abs(car.spd)>.1){
-    const steerSpeed=T.grip*Math.min(1,Math.abs(car.spd)/2);
-    car.angle+=steerIn*steerSpeed*dt*(car.spd>0?1:-1);
+  // 1. Calculate Forces
+  const engineForce = throttle > 0 ? T.acc : (throttle < 0 ? -T.brk : 0);
+  const hX = Math.cos(car.angle), hY = Math.sin(car.angle);
+  
+  // Add engine thrust to velocity vector
+  car.vx += hX * engineForce * dt;
+  car.vy += hY * engineForce * dt;
+  
+  // Calculate current longitudinal speed (for display/AI)
+  car.spd = car.vx * hX + car.vy * hY;
+  
+  // Enforce Max Speed restrictions
+  if(car.spd > T.maxSpd) {
+      const ratio = T.maxSpd / car.spd;
+      car.vx *= ratio; car.vy *= ratio; car.spd = T.maxSpd;
+  } else if(car.spd < -T.maxSpd * 0.4) {
+      const ratio = (-T.maxSpd * 0.4) / car.spd;
+      car.vx *= ratio; car.vy *= ratio; car.spd = -T.maxSpd * 0.4;
   }
 
-  // Move along car heading
-  const nx=car.x+Math.cos(car.angle)*car.spd*dt;
-  const ny=car.y+Math.sin(car.angle)*car.spd*dt;
-  const hL=T.len*.4, hW=T.wid*.38;
+  // 2. Steering (Requires forward momentum)
+  if(Math.abs(car.spd) > 0.5) {
+      // Dynamic turning radius based on grip
+      const turnSpeed = steerIn * T.grip * dt * (car.spd > 0 ? 1 : -1);
+      car.angle += turnSpeed;
+  }
 
+  // 3. Lateral Friction / Drifting (Grip)
+  const newHX = Math.cos(car.angle), newHY = Math.sin(car.angle);
+  const nX = -newHY, nY = newHX; // Normal vector
+  const latSpd = car.vx * nX + car.vy * nY;
+  
+  // Remove a portion of lateral velocity based on grip
+  const gripFactor = Math.min(1, T.grip * 2.5 * dt);
+  car.vx -= nX * latSpd * gripFactor;
+  car.vy -= nY * latSpd * gripFactor;
+
+  // 4. Base Friction / Drag
+  const friction = throttle === 0 ? 1.5 : 0.5; // Natural coasting vs active driving
+  car.vx *= (1 - Math.min(1, friction * dt));
+  car.vy *= (1 - Math.min(1, friction * dt));
+
+  // 5. Update positions
+  const nx = car.x + car.vx * dt;
+  const ny = car.y + car.vy * dt;
+  const hL = T.len*.4, hW = T.wid*.38;
+
+  // 6. Collision resolution (Bouncing and momentum dampening)
   if(carCanMove(nx,ny,car.angle,hL,hW)){
     car.x=nx; car.y=ny;
   } else if(carCanMove(nx,car.y,car.angle,hL,hW)){
-    car.x=nx; car.spd*=.6;
+    car.x=nx; car.vy *= 0.5; // Scrape off y velocity
   } else if(carCanMove(car.x,ny,car.angle,hL,hW)){
-    car.y=ny; car.spd*=.6;
+    car.y=ny; car.vx *= 0.5; // Scrape off x velocity
   } else {
-    car.spd*=-.3;
-    if(isPlayer) notify('БУМ!','#ff6600');
+    // Hard Crash
+    if(isPlayer && Math.hypot(car.vx, car.vy) > 2) notify('БУМ!','#ff6600');
+    car.vx *= -0.3; car.vy *= -0.3; car.spd *= -0.3;
   }
+  
   car.x=Math.max(.5,Math.min(MAP_W-.5,car.x));
   car.y=Math.max(.5,Math.min(MAP_H-.5,car.y));
 }
@@ -566,7 +595,19 @@ function updateMonsters(dt){
     m.x=Math.max(.5,Math.min(MAP_W-.5,m.x));m.y=Math.max(.5,Math.min(MAP_H-.5,m.y));
   }
 }
-function playerDead(){notify('ЕР ТОСТИК ПАЛ... ВОЗРОЖДЕНИЕ','#ff2222');setTimeout(()=>{player.hp=player.maxHp;player.armor=0;player.x=44.5;player.y=44.5;if(player.inCar){player.car.driven=false;player.inCar=false;player.car=null;document.getElementById('drive-panel').style.display='none';document.getElementById('walk-panel').style.display='flex';}updateHUD();},1800);}
+function playerDead(){
+  notify('ЕР ТОСТИК ПАЛ... ВОЗРОЖДЕНИЕ','#ff2222');
+  setTimeout(()=>{
+    player.hp=player.maxHp;player.armor=0;player.x=44.5;player.y=44.5;
+    if(player.inCar){
+      player.car.driven=false;player.car.vx=0;player.car.vy=0;
+      player.inCar=false;player.car=null;
+      document.getElementById('drive-panel').style.display='none';
+      document.getElementById('walk-panel').style.display='flex';
+    }
+    updateHUD();
+  },1800);
+}
 
 // ══════════════════════════ PROJECTILES ══════════════════════════
 function updateProjectiles(dt){
@@ -575,7 +616,6 @@ function updateProjectiles(dt){
     p.x+=p.vx*dt;p.y+=p.vy*dt;p.traveled+=Math.hypot(p.vx,p.vy)*dt;p.age+=dt;
     let dead=false;
     if(p.traveled>p.range||!walkable(p.x,p.y))dead=true;
-    // Hit monsters
     for(let j=monsters.length-1;j>=0;j--){
       const m=monsters[j];
       const sz=p.type==='molotov'?.5:.3;
@@ -618,25 +658,19 @@ function update(dt){
   updateMonsters(dt);
   updateProjectiles(dt);
 
-  // Effects decay
   for(let i=effects.length-1;i>=0;i--){effects[i].t-=dt;if(effects[i].t<=0)effects.splice(i,1);}
-  // Pickup bob
   for(const p of pickups){p.bob+=dt*2.2;p.age+=dt;}
-  // Spawn pickups
   pickupTimer+=dt;if(pickupTimer>18){pickupTimer=0;spawnPickup();}
 
-  // Pickup nearby indicator
   let nearPickup=pickups.some(p=>!player.inCar&&Math.hypot(p.x-player.x,p.y-player.y)<1.2);
   const gb=document.getElementById('b-grab');
   if(nearPickup)gb.classList.add('vis');else gb.classList.remove('vis');
 
-  // Camera — smooth follow
   const fp=w2s(player.x,player.y);
   const tcx=(fp.sx-cv.width/2)/cam.z+cam.x;
   const tcy=(fp.sy-cv.height/2)/cam.z+cam.y;
   cam.x+=(tcx-cam.x)*8*dt;cam.y+=(tcy-cam.y)*8*dt;
 
-  // Location
   let loc='Алматы';for(const p of PARKS)if(player.x>=p.x&&player.x<p.x+p.w&&player.y>=p.y&&player.y<p.y+p.h){loc=p.name;break;}
   document.getElementById('loc').textContent=loc;
 }
@@ -662,13 +696,11 @@ function render(){
   ctx.clearRect(0,0,cv.width,cv.height);
   const Z=cam.z;
 
-  // Night sky
   const sky=ctx.createLinearGradient(0,0,0,cv.height);sky.addColorStop(0,'#04040f');sky.addColorStop(1,'#0a0a20');
   ctx.fillStyle=sky;ctx.fillRect(0,0,cv.width,cv.height);
   ctx.fillStyle='rgba(255,255,230,0.35)';
   for(let i=0;i<150;i++)ctx.fillRect((i*137.5)%cv.width,(i*97.3)%cv.height*.45,1,1);
 
-  // ── TILES (isometric depth sort) ──
   for(let sum=0;sum<MAP_W+MAP_H-1;sum++){
     const xS=Math.max(0,sum-(MAP_H-1)),xE=Math.min(sum,MAP_W-1);
     for(let tx=xS;tx<=xE;tx++){
@@ -685,7 +717,6 @@ function render(){
       else continue;
       ctx.beginPath();ctx.moveTo(sx,sy-hh);ctx.lineTo(sx+hw,sy);ctx.lineTo(sx,sy+hh);ctx.lineTo(sx-hw,sy);ctx.closePath();
       ctx.fillStyle=fill;ctx.fill();
-      // Road markings
       if(t===T_ROAD){
         ctx.strokeStyle='rgba(255,200,30,0.1)';ctx.lineWidth=.8;ctx.setLineDash([3,5]);
         ctx.beginPath();ctx.moveTo(sx-hw*.5,sy);ctx.lineTo(sx+hw*.5,sy);ctx.stroke();
@@ -694,7 +725,6 @@ function render(){
     }
   }
 
-  // ── TREES ──
   for(const tr of trees){
     const p=iso(tr.x,tr.y,0);const sx=(p.sx-cam.x)*Z+cv.width/2,sy=(p.sy-cam.y)*Z+cv.height/2;
     if(sx<-40||sx>cv.width+40||sy<-60||sy>cv.height+20)continue;
@@ -706,7 +736,6 @@ function render(){
     ctx.beginPath();ctx.arc(sx+r*.1,sy-r*1,r*.5,0,Math.PI*2);ctx.fillStyle='#255a34';ctx.fill();
   }
 
-  // ── BUILDINGS ──
   for(const b of bldgs){
     const p0=iso(b.x,b.y,0);const bsx=(p0.sx-cam.x)*Z+cv.width/2;
     if(bsx<-350||bsx>cv.width+350)continue;
@@ -729,7 +758,6 @@ function render(){
     }
   }
 
-  // ── WEAPON PICKUPS ──
   for(const pk of pickups){
     const p=iso(pk.x,pk.y,0);
     const sx=(p.sx-cam.x)*Z+cv.width/2, sy=(p.sy-cam.y)*Z+cv.height/2;
@@ -739,7 +767,6 @@ function render(){
     const col=wt.projColor||'#f0c040';
     const psy=sy-8*Z+bob;
 
-    // Ground glow ring
     ctx.beginPath();ctx.ellipse(sx,sy+2*Z,13*Z,5*Z,0,0,Math.PI*2);
     ctx.fillStyle=col+'15';ctx.fill();
     ctx.strokeStyle=col+'50';ctx.lineWidth=1.2*Z;ctx.stroke();
@@ -747,58 +774,39 @@ function render(){
     ctx.save();ctx.translate(sx,psy);
 
     if(wt.id==='bat'){
-      // Draw a baseball bat shape
       ctx.save();ctx.rotate(-.4);
-      // Handle
       ctx.fillStyle='#8B5E3C';ctx.beginPath();ctx.roundRect(-1.5*Z,-14*Z,3*Z,20*Z,1.5*Z);ctx.fill();
       ctx.strokeStyle='#6B3E1C';ctx.lineWidth=.5*Z;ctx.stroke();
-      // Barrel
       ctx.fillStyle='#C4873A';ctx.beginPath();ctx.ellipse(0,-14*Z,5*Z,5*Z,0,0,Math.PI*2);ctx.fill();
       ctx.strokeStyle='#A4671A';ctx.lineWidth=.5*Z;ctx.stroke();
-      // Wood grain lines
       ctx.strokeStyle='#6B3E1C55';ctx.lineWidth=.5*Z;
       ctx.beginPath();ctx.moveTo(-1*Z,-14*Z);ctx.lineTo(-1*Z,6*Z);ctx.stroke();
       ctx.beginPath();ctx.moveTo(1*Z,-14*Z);ctx.lineTo(1*Z,6*Z);ctx.stroke();
       ctx.restore();
     } else if(wt.id==='pistol'){
-      // Pistol shape
       ctx.save();ctx.rotate(.2);
-      // Body
       ctx.fillStyle='#555';ctx.beginPath();ctx.roundRect(-5*Z,-8*Z,10*Z,7*Z,2*Z);ctx.fill();
-      // Grip
       ctx.fillStyle='#444';ctx.beginPath();ctx.roundRect(-2*Z,-2*Z,5*Z,10*Z,1.5*Z);ctx.fill();
-      // Barrel
       ctx.fillStyle='#333';ctx.fillRect(-6*Z,-9*Z,8*Z,3*Z);
-      // Highlight
       ctx.fillStyle='#888';ctx.fillRect(-5*Z,-8.5*Z,6*Z,1.2*Z);
-      // Trigger guard
       ctx.strokeStyle='#666';ctx.lineWidth=.8*Z;ctx.beginPath();ctx.arc(1*Z,0,3*Z,0,Math.PI);ctx.stroke();
       ctx.restore();
     } else if(wt.id==='shotgun'){
-      // Shotgun
       ctx.save();ctx.rotate(.15);
-      // Double barrels
       ctx.fillStyle='#333';ctx.beginPath();ctx.roundRect(-8*Z,-4*Z,16*Z,3.5*Z,1*Z);ctx.fill();
       ctx.beginPath();ctx.roundRect(-8*Z,-8*Z,16*Z,3.5*Z,1*Z);ctx.fill();
-      // Stock
       ctx.fillStyle='#8B5E3C';ctx.beginPath();ctx.roundRect(-3*Z,-8*Z,5*Z,14*Z,2*Z);ctx.fill();
-      // Highlight on barrels
       ctx.fillStyle='#555';ctx.fillRect(-7*Z,-3.5*Z,14*Z,1*Z);ctx.fillRect(-7*Z,-7.5*Z,14*Z,1*Z);
       ctx.restore();
-    } else { // molotov
-      // Glass bottle with fire
-      // Bottle body
+    } else { 
       const grad=ctx.createLinearGradient(-5*Z,0,5*Z,0);
       grad.addColorStop(0,'rgba(255,100,0,.4)');grad.addColorStop(.4,'rgba(255,60,0,.8)');grad.addColorStop(1,'rgba(255,100,0,.4)');
       ctx.fillStyle=grad;
       ctx.beginPath();ctx.roundRect(-5*Z,-8*Z,10*Z,14*Z,4*Z);ctx.fill();
       ctx.strokeStyle='rgba(255,180,0,.9)';ctx.lineWidth=1.2*Z;ctx.stroke();
-      // Bottle neck
       ctx.fillStyle='rgba(255,80,0,.6)';ctx.beginPath();ctx.roundRect(-2.5*Z,-13*Z,5*Z,6*Z,1*Z);ctx.fill();
       ctx.strokeStyle='rgba(255,180,0,.7)';ctx.lineWidth=1*Z;ctx.stroke();
-      // Liquid inside
       ctx.fillStyle='rgba(255,50,0,.5)';ctx.beginPath();ctx.roundRect(-3.5*Z,-2*Z,7*Z,7*Z,2*Z);ctx.fill();
-      // Flame at top
       const fph=Math.sin(pk.bob*1.8);
       ctx.fillStyle='rgba(255,200,0,.9)';ctx.beginPath();ctx.arc(0,-14*Z+fph*2*Z,3*Z,0,Math.PI*2);ctx.fill();
       ctx.fillStyle='rgba(255,100,0,.8)';ctx.beginPath();ctx.arc(-1*Z,-17*Z+fph*2*Z,2*Z,0,Math.PI*2);ctx.fill();
@@ -807,7 +815,6 @@ function render(){
 
     ctx.restore();
 
-    // Pulsing name label
     const pulse=.7+Math.sin(pk.bob*.8)*.3;
     ctx.font=`bold ${7*Z}px Courier New`;ctx.textAlign='center';ctx.textBaseline='alphabetic';
     ctx.fillStyle=col;ctx.globalAlpha=pulse;
@@ -816,7 +823,6 @@ function render(){
     ctx.globalAlpha=1;ctx.shadowBlur=0;
   }
 
-  // ── DEPTH-SORT entities (monsters + cars) ──
   const ents=[
     ...monsters.map(m=>({e:m,depth:m.x+m.y,kind:'monster'})),
     ...cars.filter(c=>c!==player.car).map(c=>({e:c,depth:c.x+c.y,kind:'car'})),
@@ -827,18 +833,15 @@ function render(){
   if(player.inCar)drawCar(player.car,Z);
   if(!player.inCar)drawErTostik(Z);
 
-  // ── PROJECTILES ──
   for(const p of projectiles){
     const sp=w2s(p.x,p.y,.15);
     if(p.type==='molotov'){
-      // Flaming bottle in flight
       ctx.shadowBlur=14*Z;ctx.shadowColor='#ff6600';
       ctx.beginPath();ctx.arc(sp.sx,sp.sy,5*Z,0,Math.PI*2);
       ctx.fillStyle='#ff4400';ctx.fill();
       ctx.beginPath();ctx.arc(sp.sx,sp.sy-4*Z,3*Z,0,Math.PI*2);
       ctx.fillStyle='#ffaa00';ctx.fill();
       ctx.shadowBlur=0;
-      // Flame trail
       const fang=Math.atan2(p.vy,p.vx)+Math.PI;
       for(let t=1;t<=4;t++){
         const tx=sp.sx+Math.cos(fang)*t*4*Z,ty=sp.sy+Math.sin(fang)*t*4*Z;
@@ -846,10 +849,8 @@ function render(){
         ctx.fillStyle=`rgba(255,${Math.floor(100+t*30)},0,${.7-t*.15})`;ctx.fill();
       }
     } else {
-      // Bullet with motion trail
       const r=p.type==='shotgun'?2.8*Z:2.2*Z;
       const ang=Math.atan2(p.vy,p.vx)+Math.PI;
-      // Trail
       const trailLen=p.type==='shotgun'?3:5;
       for(let t=1;t<=trailLen;t++){
         const tx=sp.sx+Math.cos(ang)*t*r*1.8,ty=sp.sy+Math.sin(ang)*t*r*1.8;
@@ -857,18 +858,15 @@ function render(){
         ctx.fillStyle=p.col+Math.floor((1-t/trailLen)*80).toString(16).padStart(2,'0');
         ctx.fill();
       }
-      // Bullet head
       ctx.shadowBlur=10*Z;ctx.shadowColor=p.col;
       ctx.beginPath();ctx.arc(sp.sx,sp.sy,r,0,Math.PI*2);
       ctx.fillStyle=p.col;ctx.fill();
-      // Core bright center
       ctx.shadowBlur=0;
       ctx.beginPath();ctx.arc(sp.sx,sp.sy,r*.45,0,Math.PI*2);
       ctx.fillStyle='#ffffff';ctx.fill();
     }
   }
 
-  // ── EFFECTS ──
   for(const ef of effects){
     const sp=w2s(ef.x,ef.y,.2);const frac=ef.t/(ef.type==='explosion'?.8:.4);
     if(ef.type==='hit'){
@@ -886,7 +884,6 @@ function render(){
     }
   }
 
-  // ── CAR ENTER HINT ──
   if(!player.inCar){
     let best=null,bd=1.8;for(const c of cars){const d=Math.hypot(c.x-player.x,c.y-player.y);if(d<bd){bd=d;best=c;}}
     if(best){
@@ -897,14 +894,12 @@ function render(){
     }
   }
 
-  // Hit flash overlay
   if(player.hitFlash>0){ctx.fillStyle=`rgba(255,0,0,${player.hitFlash*.35})`;ctx.fillRect(0,0,cv.width,cv.height);}
 
   drawMinimap();
 }
 
 // ══════════════════════════ ЕР ТОСТИК SPRITE ══════════════════════════
-// Detailed pixel-art style Kazakh hero: red chapan, tymak hat, boots, animated
 function drawErTostik(Z){
   const p=iso(player.x,player.y,0);
   const sx=(p.sx-cam.x)*Z+cv.width/2, sy=(p.sy-cam.y)*Z+cv.height/2;
@@ -920,22 +915,16 @@ function drawErTostik(Z){
   ctx.save();
   ctx.translate(sx,sy);
 
-  // ── SHADOW ──
   ctx.beginPath();ctx.ellipse(0,5*S,10*S,4*S,0,0,Math.PI*2);
   ctx.fillStyle='rgba(0,0,0,.5)';ctx.fill();
 
-  // ── LEFT BOOT ──
   ctx.save();ctx.translate(-4*S,legA*S);
-  // boot shaft
   ctx.fillStyle='#3a2010';
   ctx.beginPath();ctx.roundRect(-3*S,-4*S,7*S,13*S,2*S);ctx.fill();
-  // boot top band
   ctx.fillStyle='#c8880a';ctx.fillRect(-3*S,-4*S,7*S,2.5*S);
-  // sole
   ctx.fillStyle='#1e0e00';ctx.beginPath();ctx.ellipse(.5*S,9*S,4.5*S,2*S,0,0,Math.PI*2);ctx.fill();
   ctx.restore();
 
-  // ── RIGHT BOOT ──
   ctx.save();ctx.translate(4*S,-legA*S);
   ctx.fillStyle='#3a2010';
   ctx.beginPath();ctx.roundRect(-3*S,-4*S,7*S,13*S,2*S);ctx.fill();
@@ -943,61 +932,39 @@ function drawErTostik(Z){
   ctx.fillStyle='#1e0e00';ctx.beginPath();ctx.ellipse(.5*S,9*S,4.5*S,2*S,0,0,Math.PI*2);ctx.fill();
   ctx.restore();
 
-  // ── CHAPAN BODY (Kazakh robe) ──
-  // Side panels give 3D depth
-  // Left dark side
   ctx.fillStyle='#6a1200';
   ctx.beginPath();ctx.moveTo(-9*S,-24*S);ctx.lineTo(-12*S,8*S);ctx.lineTo(-8*S,8*S);ctx.lineTo(-6*S,-24*S);ctx.closePath();ctx.fill();
-  // Main red front
   ctx.fillStyle='#aa1e00';
   ctx.beginPath();ctx.moveTo(-6*S,-24*S);ctx.lineTo(6*S,-24*S);ctx.lineTo(9*S,8*S);ctx.lineTo(-8*S,8*S);ctx.closePath();ctx.fill();
-  // Right lighter panel
   ctx.fillStyle='#cc2800';
   ctx.beginPath();ctx.moveTo(6*S,-24*S);ctx.lineTo(9*S,-24*S);ctx.lineTo(12*S,8*S);ctx.lineTo(9*S,8*S);ctx.closePath();ctx.fill();
 
-  // Gold trim borders
   ctx.strokeStyle='#d4a200';ctx.lineWidth=1.8*S;ctx.lineJoin='round';
   ctx.beginPath();ctx.moveTo(-9*S,-24*S);ctx.lineTo(-12*S,8*S);ctx.stroke();
   ctx.beginPath();ctx.moveTo(9*S,-24*S);ctx.lineTo(12*S,8*S);ctx.stroke();
   ctx.beginPath();ctx.moveTo(-9*S,-24*S);ctx.lineTo(9*S,-24*S);ctx.stroke();
-  // Center seam
   ctx.strokeStyle='#881000';ctx.lineWidth=.9*S;
   ctx.beginPath();ctx.moveTo(0,-24*S);ctx.lineTo(0,8*S);ctx.stroke();
 
-  // Ornamental zigzag on front
   ctx.strokeStyle='#d4a20055';ctx.lineWidth=.7*S;
   for(let oy=-20;oy<6;oy+=5){
-    ctx.beginPath();
-    ctx.moveTo(-5*S,oy*S);
-    ctx.lineTo(-2*S,(oy+2.5)*S);
-    ctx.lineTo(-5*S,(oy+5)*S);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(5*S,oy*S);
-    ctx.lineTo(2*S,(oy+2.5)*S);
-    ctx.lineTo(5*S,(oy+5)*S);
-    ctx.stroke();
+    ctx.beginPath();ctx.moveTo(-5*S,oy*S);ctx.lineTo(-2*S,(oy+2.5)*S);ctx.lineTo(-5*S,(oy+5)*S);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(5*S,oy*S);ctx.lineTo(2*S,(oy+2.5)*S);ctx.lineTo(5*S,(oy+5)*S);ctx.stroke();
   }
 
-  // Gold belt (кемер)
   ctx.fillStyle='#d4a200';ctx.beginPath();ctx.roundRect(-9*S,-7*S,18*S,3*S,1.5*S);ctx.fill();
-  // Belt buckle center
   ctx.fillStyle='#fff5aa';ctx.beginPath();ctx.roundRect(-3.5*S,-7*S,7*S,3*S,1*S);ctx.fill();
   ctx.fillStyle='#aa8800';ctx.beginPath();ctx.arc(0,-5.5*S,1.2*S,0,Math.PI*2);ctx.fill();
 
-  // ── LEFT ARM ──
   ctx.save();ctx.translate(-11*S,-17*S);
   ctx.fillStyle='#8a1500';
   ctx.beginPath();ctx.roundRect(-3*S,-armA*S,6*S,13*S,2.5*S);ctx.fill();
   ctx.strokeStyle='#d4a200';ctx.lineWidth=.6*S;ctx.strokeRect(-3*S,-armA*S,6*S,13*S);
-  // left hand
   ctx.fillStyle='#c89060';ctx.beginPath();ctx.arc(0,(13-armA)*S,3*S,0,Math.PI*2);ctx.fill();
   ctx.restore();
 
-  // ── RIGHT ARM (weapon/kick arm) ──
   ctx.save();
   if(kicking){
-    // Kick: arm swings with leg momentum
     ctx.translate(11*S,-17*S);
     ctx.rotate(-kickT*0.5);
     ctx.fillStyle='#8a1500';
@@ -1005,19 +972,16 @@ function drawErTostik(Z){
     ctx.strokeStyle='#d4a200';ctx.lineWidth=.6*S;ctx.strokeRect(-3*S,0,6*S,13*S);
     ctx.fillStyle='#c89060';ctx.beginPath();ctx.arc(0,13*S,3*S,0,Math.PI*2);ctx.fill();
   } else if(shooting){
-    // Shoot: arm extends forward
     const ext=player.shootAnim/.18;
     ctx.translate(11*S+ext*3*S,-17*S-ext*2*S);
     ctx.fillStyle='#8a1500';
     ctx.beginPath();ctx.roundRect(-3*S,armA*S,6*S,13*S,2.5*S);ctx.fill();
     ctx.strokeStyle='#d4a200';ctx.lineWidth=.6*S;ctx.strokeRect(-3*S,armA*S,6*S,13*S);
-    // weapon in hand
     ctx.fillStyle='#c89060';ctx.beginPath();ctx.arc(0,(13+armA)*S,3*S,0,Math.PI*2);ctx.fill();
     if(player.weapon){
       ctx.font=`${11*S}px serif`;ctx.textAlign='center';ctx.textBaseline='middle';
       ctx.fillText(player.weapon.icon,0,(13+armA)*S);
     }
-    // Muzzle flash if shooting
     if(shooting&&player.weapon&&player.weapon.id!=='bat'){
       const f=player.shootAnim/.18;
       ctx.beginPath();ctx.arc(0,(13+armA)*S,8*S*f,0,Math.PI*2);
@@ -1037,98 +1001,74 @@ function drawErTostik(Z){
   }
   ctx.restore();
 
-  // ── NECK ──
   ctx.fillStyle='#c89060';ctx.beginPath();ctx.roundRect(-3*S,-29*S,6*S,6*S,2*S);ctx.fill();
 
-  // ── HEAD ──
-  // Face skin — slightly oval
   ctx.fillStyle='#c89060';ctx.beginPath();ctx.ellipse(0,-36*S,8.5*S,9*S,0,0,Math.PI*2);ctx.fill();
-  // Ears
   ctx.beginPath();ctx.arc(-8.5*S,-36*S,3*S,0,Math.PI*2);ctx.fill();
   ctx.beginPath();ctx.arc(8.5*S,-36*S,3*S,0,Math.PI*2);ctx.fill();
-  // Inner ears
   ctx.fillStyle='#b07848';
   ctx.beginPath();ctx.arc(-8.5*S,-36*S,1.5*S,0,Math.PI*2);ctx.fill();
   ctx.beginPath();ctx.arc(8.5*S,-36*S,1.5*S,0,Math.PI*2);ctx.fill();
 
-  // ── TYMAK (Kazakh fur hat) ──
-  // Fur base ring — dark brown
   ctx.fillStyle='#2c1400';ctx.beginPath();ctx.ellipse(0,-42*S,11*S,5.5*S,0,0,Math.PI*2);ctx.fill();
-  // Hat felt dome — red matching chapan
   ctx.fillStyle='#aa1e00';
   ctx.beginPath();
   ctx.moveTo(-9*S,-42*S);
   ctx.bezierCurveTo(-11*S,-55*S,-5*S,-64*S,0,-65*S);
   ctx.bezierCurveTo(5*S,-64*S,11*S,-55*S,9*S,-42*S);
   ctx.closePath();ctx.fill();
-  // Hat highlight (left lighter)
   ctx.fillStyle='#cc2800';
   ctx.beginPath();
   ctx.moveTo(-9*S,-42*S);
   ctx.bezierCurveTo(-10*S,-54*S,-3*S,-63*S,0,-65*S);
   ctx.bezierCurveTo(-3*S,-63*S,-8*S,-52*S,-6*S,-42*S);
   ctx.closePath();ctx.fill();
-  // Gold hat trim lines
   ctx.strokeStyle='#d4a200';ctx.lineWidth=1*S;
   ctx.beginPath();ctx.moveTo(-8*S,-42*S);ctx.bezierCurveTo(-10*S,-52*S,-5*S,-62*S,0,-65*S);ctx.stroke();
   ctx.beginPath();ctx.moveTo(8*S,-42*S);ctx.bezierCurveTo(10*S,-52*S,5*S,-62*S,0,-65*S);ctx.stroke();
-  // Gold top ornament (шар)
   ctx.fillStyle='#f0c040';ctx.shadowBlur=8*S;ctx.shadowColor='#d4a200';
   ctx.beginPath();ctx.arc(0,-65*S,3*S,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;
-  // Fur band — texture
   ctx.fillStyle='#3d1e00';ctx.beginPath();ctx.ellipse(0,-42.5*S,11*S,4.5*S,0,0,Math.PI*2);ctx.fill();
   ctx.fillStyle='#5a2e00';ctx.beginPath();ctx.ellipse(0,-43*S,11*S,3.2*S,0,0,Math.PI*2);ctx.fill();
-  // Fur strokes
   ctx.strokeStyle='#2c1400';ctx.lineWidth=.8*S;
   for(let i=-5;i<=5;i+=1.8){
     ctx.beginPath();ctx.moveTo(i*S,-40*S);ctx.lineTo(i*S*.95,(i%2===0?-46:-44)*S);ctx.stroke();
   }
 
-  // ── FACE FEATURES ──
-  // Eyebrows — strong Kazakh brows
   ctx.fillStyle='#2c1400';
   ctx.beginPath();ctx.roundRect(-7*S,-39*S,5.5*S,1.4*S,1*S);ctx.fill();
   ctx.beginPath();ctx.roundRect(1.5*S,-39*S,5.5*S,1.4*S,1*S);ctx.fill();
 
-  // Eyes — dark almond shaped
   ctx.fillStyle='#fff';
   ctx.beginPath();ctx.ellipse(-4*S,-36.5*S,2.8*S,1.8*S,-.15,0,Math.PI*2);ctx.fill();
   ctx.beginPath();ctx.ellipse(4*S,-36.5*S,2.8*S,1.8*S,.15,0,Math.PI*2);ctx.fill();
   ctx.fillStyle='#1a0800';
   ctx.beginPath();ctx.arc(-4*S,-36.5*S,1.6*S,0,Math.PI*2);ctx.fill();
   ctx.beginPath();ctx.arc(4*S,-36.5*S,1.6*S,0,Math.PI*2);ctx.fill();
-  // Eye shine
   ctx.fillStyle='rgba(255,255,255,.8)';
   ctx.beginPath();ctx.arc(-3.3*S,-37*S,.7*S,0,Math.PI*2);ctx.fill();
   ctx.beginPath();ctx.arc(4.7*S,-37*S,.7*S,0,Math.PI*2);ctx.fill();
 
-  // Nose
   ctx.fillStyle='#a87050';
   ctx.beginPath();ctx.moveTo(-1.5*S,-34*S);ctx.lineTo(1.5*S,-34*S);ctx.lineTo(0,-32*S);ctx.closePath();ctx.fill();
 
-  // Mustache — hero мustache!
   ctx.strokeStyle='#1a0800';ctx.lineWidth=1.3*S;ctx.lineCap='round';
   ctx.beginPath();ctx.moveTo(-5*S,-31.5*S);ctx.quadraticCurveTo(-2.5*S,-29.5*S,0,-31*S);ctx.stroke();
   ctx.beginPath();ctx.moveTo(5*S,-31.5*S);ctx.quadraticCurveTo(2.5*S,-29.5*S,0,-31*S);ctx.stroke();
   ctx.lineCap='butt';
 
-  // Mouth — confident smile
   ctx.strokeStyle='#884030';ctx.lineWidth=.9*S;
   ctx.beginPath();ctx.arc(0,-30*S,2.8*S,.2,Math.PI-.2);ctx.stroke();
 
-  // ── KICK ANIMATION (right leg extended) ──
   if(kicking){
     ctx.save();
     ctx.translate(5*S,0);
     ctx.rotate(-kickT*1.4);
-    // Kicking leg
     ctx.fillStyle='#aa1e00';
     ctx.beginPath();ctx.roundRect(-3.5*S,-4*S,7*S,14*S,2.5*S);ctx.fill();
     ctx.strokeStyle='#d4a200';ctx.lineWidth=.8*S;ctx.strokeRect(-3.5*S,-4*S,7*S,14*S);
-    // Kicking boot
     ctx.fillStyle='#3a2010';ctx.beginPath();ctx.roundRect(-3.5*S,9*S,8*S,6*S,2.5*S);ctx.fill();
     ctx.fillStyle='#c8880a';ctx.fillRect(-3.5*S,9*S,8*S,2*S);
-    // Impact burst
     if(kickT>.5){
       const f=kickT;
       ctx.beginPath();ctx.arc(3*S,14*S,12*S*(f-.5)*2,0,Math.PI*2);
@@ -1139,7 +1079,6 @@ function drawErTostik(Z){
 
   ctx.restore();
 }
-
 
 // ══════════════════════════ CAR SPRITE ══════════════════════════
 function drawCar(car,Z){
@@ -1209,7 +1148,7 @@ function drawMonster(m,Z){
     ctx.fillStyle='#b0c880';ctx.beginPath();ctx.arc(0,-31*S,7.5*S,0,Math.PI*2);ctx.fill();
     ctx.shadowBlur=9*Z;ctx.shadowColor=m.type.eyeCol;ctx.fillStyle=m.type.eyeCol;
     ctx.beginPath();ctx.arc(-3*S,-32*S,2.2*S,0,Math.PI*2);ctx.fill();ctx.beginPath();ctx.arc(3*S,-32*S,2.2*S,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;
-  } else { // МУТАНТ
+  } else { 
     ctx.fillStyle='#551111';ctx.beginPath();ctx.roundRect(-5*S,leg*S-2*S,8*S,14*S,2*S);ctx.fill();ctx.beginPath();ctx.roundRect(-9*S,-leg*S-2*S,8*S,14*S,2*S);ctx.fill();
     ctx.fillStyle=m.type.col;ctx.beginPath();ctx.roundRect(-10*S,-26*S,20*S,22*S,3*S);ctx.fill();
     ctx.fillStyle='#882222';for(const dx of[-1,1]){ctx.beginPath();ctx.moveTo(dx*8*S,-26*S);ctx.lineTo(dx*11*S,-35*S);ctx.lineTo(dx*5*S,-28*S);ctx.closePath();ctx.fill();}
@@ -1221,7 +1160,6 @@ function drawMonster(m,Z){
     ctx.beginPath();ctx.arc(-3.5*S,-36*S,2.8*S,0,Math.PI*2);ctx.fill();ctx.beginPath();ctx.arc(3.5*S,-36*S,2.8*S,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;
   }
 
-  // HP bar
   const hf=m.hp/m.type.maxHp;const bw=22*S,bx=-11*S,by=-58*S;
   ctx.fillStyle='#0a0a0a';ctx.fillRect(bx,by,bw,3.5*S);
   ctx.fillStyle=hf>.5?'#44dd44':hf>.25?'#ffaa00':'#ff3333';ctx.fillRect(bx,by,bw*hf,3.5*S);
